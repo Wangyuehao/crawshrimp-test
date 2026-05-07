@@ -8,6 +8,35 @@ from core import api_server
 
 
 class ApiTaskLifecycleTests(unittest.IsolatedAsyncioTestCase):
+    async def test_list_tasks_includes_adapter_version(self):
+        class FakeTask:
+            id = "voucher_batch_create"
+            name = "批量创建优惠券"
+            description = "desc"
+            param_probe_script = None
+            execution_ui_mode = None
+            validation_only_label = None
+            auto_precheck_note = None
+            params = []
+            trigger = type("Trigger", (), {"model_dump": lambda self: {"type": "manual"}})()
+
+        class FakeAdapter:
+            id = "shopee-plus-v2"
+            name = "Shopee 运营助手"
+            version = "2.3.4"
+            tasks = [FakeTask()]
+
+        with patch("core.api_server.adapter_loader.scan_all"):
+            with patch("core.api_server.adapter_loader.list_all", return_value=[{"id": "shopee-plus-v2", "enabled": True}]):
+                with patch("core.api_server.adapter_loader.get_adapter", return_value=FakeAdapter()):
+                    with patch("core.api_server.sched_module.list_jobs", return_value=[]):
+                        with patch("core.api_server.data_sink.get_latest_run", return_value=None):
+                            tasks = api_server.list_tasks()
+
+        self.assertEqual(len(tasks), 1)
+        self.assertEqual(tasks[0]["adapter_id"], "shopee-plus-v2")
+        self.assertEqual(tasks[0]["adapter_version"], "2.3.4")
+
     async def test_run_task_background_marks_early_crash_as_error_and_clears_control(self):
         jid = "temu::tax_free_return_confirm"
         original_status = dict(api_server._run_status)

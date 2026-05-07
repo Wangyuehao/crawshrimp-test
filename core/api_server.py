@@ -2484,6 +2484,7 @@ def list_tasks():
             result.append({
                 "adapter_id": m.id,
                 "adapter_name": m.name,
+                "adapter_version": m.version,
                 "task_id": task.id,
                 "task_name": task.name,
                 "description": task.description,

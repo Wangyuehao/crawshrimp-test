@@ -26,13 +26,25 @@
         <div class="card-top">
           <span class="card-icon">🦐</span>
           <div class="card-info">
-            <strong>{{ entry.group.adapter_name }}</strong>
+            <div class="card-title-row">
+              <strong>{{ entry.group.adapter_name }}</strong>
+              <span v-if="entry.group.adapter_version" class="adapter-version">v{{ entry.group.adapter_version }}</span>
+            </div>
             <span class="task-count">{{ entry.group.tasks.length }} 个任务</span>
           </div>
           <span class="arrow">→</span>
         </div>
         <div class="task-chips">
-          <span v-for="t in entry.group.tasks" :key="t.task_id" class="chip">{{ t.task_name }}</span>
+          <div class="task-chips-list" :style="{ maxHeight: `${entry.preview.maxHeight}px` }">
+            <span v-for="t in entry.group.tasks" :key="t.task_id" class="chip">{{ t.task_name }}</span>
+          </div>
+          <button
+            v-if="entry.preview.isOverflowing"
+            class="more-btn"
+            @click.stop="$emit('open-script', entry.group)"
+          >
+            还有 {{ entry.preview.hiddenTaskCount }} 个任务，点击查看
+          </button>
         </div>
         <div v-if="entry.isEnhancedProgress && entry.progress" class="card-progress">
           <div class="card-progress-head">
@@ -145,6 +157,7 @@
 
 <script setup>
 import { computed, ref, inject, onMounted, onUnmounted } from 'vue'
+import { getScriptCardTaskPreviewMeta } from '../utils/scriptCardPreview'
 import { buildTaskOverviewProgress, isTaskLiveActive, resolveTaskProgressConfig } from '../utils/taskProgress'
 
 const emit = defineEmits(['open-script', 'reload'])
@@ -176,9 +189,11 @@ const displayGroups = computed(() =>
     const runningTask = group.tasks.find(task => isTaskLiveActive(task.live?.status)) || null
     const isEnhancedProgress = !!runningTask &&
       resolveTaskProgressConfig(group.adapter_id, runningTask.task_id).usage.scriptList === 'enhanced'
+    const preview = getScriptCardTaskPreviewMeta(group)
     return {
       group,
       runningTask,
+      preview,
       isEnhancedProgress,
       progress: isEnhancedProgress
         ? buildTaskOverviewProgress(group.adapter_id, runningTask.task_id, runningTask.live || {})
@@ -480,15 +495,62 @@ onUnmounted(() => {
 .card-top { display: flex; align-items: center; gap: 12px; }
 .card-icon { font-size: 26px; }
 .card-info { flex: 1; }
-.card-info strong { display: block; font-size: 15px; font-weight: 700; color: var(--text); }
+.card-title-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.card-info strong {
+  display: block;
+  min-width: 0;
+  flex: 1;
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.adapter-version {
+  flex-shrink: 0;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: rgba(255, 106, 41, 0.1);
+  border: 1px solid rgba(255, 106, 41, 0.18);
+  color: var(--orange);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
 .task-count { font-size: 12px; color: var(--text3); }
 .arrow { font-size: 16px; color: var(--text3); transition: color 0.15s; }
 .script-card:hover .arrow { color: var(--orange); }
-.task-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.task-chips {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+}
+.task-chips-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  overflow: hidden;
+}
 .chip {
   font-size: 11px; padding: 3px 9px; border-radius: 20px;
   background: var(--bg3); border: 1px solid var(--border); color: var(--text2);
 }
+.more-btn {
+  border: none;
+  background: transparent;
+  color: var(--orange);
+  font-size: 12px;
+  font-weight: 600;
+  padding: 0;
+}
+.more-btn:hover { color: #ff8d58; }
 .card-progress {
   display: flex;
   flex-direction: column;
