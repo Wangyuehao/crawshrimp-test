@@ -23,16 +23,15 @@
         :class="{ disabled: !entry.group.enabled }"
         @click="$emit('open-script', entry.group)"
       >
+        <span v-if="entry.group.adapter_version" class="adapter-version">v{{ entry.group.adapter_version }}</span>
         <div class="card-top">
           <span class="card-icon">🦐</span>
           <div class="card-info">
             <div class="card-title-row">
               <strong>{{ entry.group.adapter_name }}</strong>
-              <span v-if="entry.group.adapter_version" class="adapter-version">v{{ entry.group.adapter_version }}</span>
             </div>
             <span class="task-count">{{ entry.group.tasks.length }} 个任务</span>
           </div>
-          <span class="arrow">→</span>
         </div>
         <div class="task-chips">
           <div class="task-chips-list" :style="{ maxHeight: `${entry.preview.maxHeight}px` }">
@@ -486,25 +485,24 @@ onUnmounted(() => {
   gap: 16px; align-content: start;
 }
 .script-card {
+  position: relative;
   background: var(--bg2); border: 1px solid var(--border); border-radius: 12px;
   padding: 18px; cursor: pointer; transition: all 0.15s;
   display: flex; flex-direction: column; gap: 12px;
 }
 .script-card:hover { border-color: var(--orange); background: var(--bg3); }
 .script-card.disabled { opacity: 0.5; }
-.card-top { display: flex; align-items: center; gap: 12px; }
+.card-top { display: flex; align-items: center; gap: 12px; padding-right: 88px; }
 .card-icon { font-size: 26px; }
 .card-info { flex: 1; }
 .card-title-row {
   display: flex;
   align-items: center;
-  gap: 8px;
   min-width: 0;
 }
 .card-info strong {
   display: block;
   min-width: 0;
-  flex: 1;
   font-size: 15px;
   font-weight: 700;
   color: var(--text);
@@ -513,19 +511,19 @@ onUnmounted(() => {
   text-overflow: ellipsis;
 }
 .adapter-version {
-  flex-shrink: 0;
+  position: absolute;
+  top: 18px;
+  right: 18px;
   padding: 2px 8px;
   border-radius: 999px;
-  background: rgba(255, 106, 41, 0.1);
-  border: 1px solid rgba(255, 106, 41, 0.18);
-  color: var(--orange);
+  background: rgba(22, 24, 32, 0.92);
+  border: 1px solid rgba(92, 99, 122, 0.38);
+  color: #b8bfd6;
   font-size: 10px;
   font-weight: 700;
   letter-spacing: 0.02em;
 }
 .task-count { font-size: 12px; color: var(--text3); }
-.arrow { font-size: 16px; color: var(--text3); transition: color 0.15s; }
-.script-card:hover .arrow { color: var(--orange); }
 .task-chips {
   display: flex;
   flex-direction: column;
