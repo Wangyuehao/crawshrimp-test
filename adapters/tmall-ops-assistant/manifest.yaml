@@ -1,0 +1,75 @@
+id: tmall-ops-assistant
+name: 天猫运营助手
+version: 0.1.0
+author: codex
+description: "抓取天猫商品链接下的买家评价数据，支持批量链接导出"
+entry_url: https://detail.tmall.com/item.htm
+tab_match_prefixes:
+  - https://detail.tmall.com/
+  - https://item.taobao.com/
+  - https://www.tmall.com/
+  - https://rate.tmall.com/
+
+auth:
+  check_script: auth_check.js
+  login_url: https://login.taobao.com/member/login.jhtml
+
+tasks:
+  - id: buyer_reviews
+    name: 买家评价抓取
+    description: 输入一个或多个天猫商品链接，抓取买家评价、评价时间、规格、图片和追评信息
+    script: buyer-reviews.js
+    skip_auth: false
+    params:
+      - id: item_links
+        type: textarea
+        label: 天猫商品链接
+        rows: 6
+        required: true
+        placeholder: "一行一个天猫商品链接"
+        hint: 支持直接粘贴多条链接，也支持用顿号、逗号、空格分隔。运行时会按这里填写的链接抓取。
+      - id: page_size
+        type: select
+        label: 每页评价数
+        default: "20"
+        ui_span: third
+        options:
+          - value: "10"
+            label: 10 条/页
+          - value: "20"
+            label: 20 条/页（推荐）
+        hint: 天猫 MTop 评价接口在 20 条/页时分页最稳定。
+      - id: max_pages
+        type: number
+        label: 每个商品最多抓取页数
+        default: 30
+        min: 1
+        max: 30
+        step: 1
+        ui_span: third
+        hint: 默认最多尝试 30 页，按接口 hasNext 自动提前停止；天猫可能折叠部分评价，接口只返回可见评价明细。
+    trigger:
+      type: manual
+    output:
+      - type: excel
+        filename: "天猫买家评价_{timestamp}.xlsx"
+        columns:
+          - 商品ID
+          - SKU_ID
+          - 商品链接
+          - 商品标题
+          - 页码
+          - 序号
+          - 评价ID
+          - 买家昵称
+          - 评价时间
+          - 评分
+          - 规格
+          - 评价内容
+          - 追评内容
+          - 追评时间
+          - 评价图片
+          - 有图
+          - 数据来源
+          - 执行结果
+          - 备注

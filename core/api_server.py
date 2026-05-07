@@ -21,7 +21,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import List, Optional
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import urlencode, parse_qs, urlparse
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -56,6 +56,7 @@ RUNTIME_CLEANUP_TASKS = {
     ("semir-cloud-drive", "batch_image_download"),
     ("semir-cloud-drive", "tmall_material_match_buy"),
     ("shenhui-new-arrival", "prepare_upload_package"),
+    ("tiktok-ops-assistant", "creator_video_download"),
 }
 
 
@@ -72,6 +73,109 @@ def _build_run_control() -> dict:
         "last_progress_exec_no": 0,
         "total_rows": 0,
     }
+
+
+def _extract_candidate_urls_from_text(value: object) -> list[str]:
+    text = str(value or "").strip()
+    if not text:
+        return []
+    matches = re.findall(r"https?://[\s\S]*?(?=https?://|$)", text, flags=re.IGNORECASE)
+    if matches:
+        return [item.rstrip("、，,;；").strip() for item in matches if item.strip()]
+    return [
+        item.strip()
+        for item in re.split(r"[\n\r\t 、，,;；]+", text)
+        if item.strip()
+    ]
+
+
+def _normalize_tmall_item_link(raw_url: object) -> str:
+    text = str(raw_url or "").strip().rstrip("、，,;；")
+    if not text:
+        return ""
+    try:
+        parsed = urlparse(text)
+    except Exception:
+        return ""
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        return ""
+    query = parse_qs(parsed.query or "", keep_blank_values=False)
+    item_id = ""
+    for key in ("id", "itemId", "item_id", "itemNumId", "item_num_id"):
+        candidate = (query.get(key) or [""])[0].strip()
+        if candidate:
+            item_id = candidate
+            break
+    if not re.fullmatch(r"\d{6,}", item_id):
+        return ""
+    sku_id = ""
+    for key in ("skuId", "sku_id"):
+        candidate = (query.get(key) or [""])[0].strip()
+        if candidate:
+            sku_id = candidate
+            break
+    params = {"id": item_id}
+    if re.fullmatch(r"\d{6,}", sku_id):
+        params["skuId"] = sku_id
+    return f"https://detail.tmall.com/item.htm?{urlencode(params)}"
+
+
+def _resolve_tmall_buyer_review_item_urls(run_params: dict) -> list[str]:
+    urls: list[str] = []
+    seen: set[str] = set()
+    for key in ("item_links", "item_url", "links"):
+        for candidate in _extract_candidate_urls_from_text(run_params.get(key)):
+            normalized = _normalize_tmall_item_link(candidate)
+            if not normalized or normalized in seen:
+                continue
+            seen.add(normalized)
+            urls.append(normalized)
+    return urls
+
+
+def _resolve_task_target_entry_url(adapter_id: str, task_id: str, run_params: dict, fallback_url: str) -> str:
+    fallback = str(fallback_url or "").strip()
+    if adapter_id == "tiktok-ops-assistant" and task_id in {"product_rating", "creator_video_download"}:
+        raw_regions = run_params.get("shop_regions") or run_params.get("regions")
+        if isinstance(raw_regions, list):
+            selected_regions = [str(item) for item in raw_regions]
+        else:
+            selected_regions = _extract_candidate_urls_from_text(raw_regions)
+        region = ""
+        for candidate in selected_regions:
+            normalized = str(candidate or "").strip().upper()
+            if normalized == "ALL":
+                continue
+            if re.fullmatch(r"[A-Z]{2}", normalized):
+                region = normalized
+                break
+        if not region:
+            region = "US"
+        parsed = urlparse(fallback)
+        query = parse_qs(parsed.query or "", keep_blank_values=False)
+        shop_id = (query.get("shop_id") or [""])[0].strip()
+        if task_id == "creator_video_download":
+            suffix = f"?shop_region={region}"
+            if shop_id:
+                suffix += f"&shop_id={shop_id}"
+            return f"https://affiliate.tiktokshopglobalselling.com/insights/transaction-analysis{suffix}"
+        host = "seller.us.tiktokshopglobalselling.com" if region == "US" else "seller.eu.tiktokshopglobalselling.com"
+        suffix = f"?shop_region={region}"
+        if shop_id:
+            suffix += f"&shop_id={shop_id}"
+        return f"https://{host}/product/rating{suffix}"
+    if (adapter_id, task_id) != ("tmall-ops-assistant", "buyer_reviews"):
+        return fallback
+    urls = _resolve_tmall_buyer_review_item_urls(run_params)
+    if urls:
+        return urls[0]
+    raise ValueError("请先填写有效的天猫商品链接")
+
+
+def _resolve_task_open_mode(adapter_id: str, task_id: str, run_params: dict, task_param_ids: set[str]) -> str:
+    if (adapter_id, task_id) == ("tmall-ops-assistant", "buyer_reviews"):
+        return "new"
+    return str(run_params.get('mode') or ('new' if 'mode' not in task_param_ids else 'current')).strip().lower()
 
 
 async def _evaluate_filename_context(runner, expression: str) -> dict:
@@ -499,6 +603,9 @@ async def _build_export_filename_context(adapter_id: str, task_id: str, run_para
 
     regions = run_params.get('regions') or []
     ctx['region_scope'] = normalize_list_scope(regions, '全部地区')
+    if adapter_id == 'tiktok-ops-assistant':
+        tiktok_regions = run_params.get('shop_regions') or run_params.get('regions') or []
+        ctx['region_scope'] = normalize_list_scope(tiktok_regions, '全部地区')
     ctx['site_scope'] = normalize_list_scope(run_params.get('outer_sites') or [], '全部站点')
     ctx['detail_site_scope'] = normalize_list_scope(run_params.get('detail_sites') or [], '全部详情站点')
     ctx['detail_grain_scope'] = normalize_list_scope(run_params.get('detail_grains') or [], '全部粒度')
@@ -1310,6 +1417,82 @@ def _finalize_semir_cloud_drive_outputs(
     return final_refs
 
 
+def _finalize_tiktok_creator_video_outputs(
+    data_rows: list,
+    runtime_files: list,
+    exported_files: list,
+    run_params: dict,
+    runtime_artifact_dir: str,
+    log,
+) -> list[str]:
+    runtime_dir = Path(runtime_artifact_dir)
+    runtime_dir.mkdir(parents=True, exist_ok=True)
+
+    exported_refs = [str(path) for path in exported_files or [] if str(path or "").strip()]
+    default_root = _default_output_root_for_runtime(runtime_dir, exported_files)
+    output_dir = str(run_params.get("output_dir") or "").strip()
+    target_root = Path(output_dir).expanduser() if output_dir else None
+    if target_root:
+        target_root.mkdir(parents=True, exist_ok=True)
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    package_base = _safe_local_name(
+        run_params.get("package_name") or f"达人视频下载_{timestamp}",
+        f"达人视频下载_{timestamp}",
+    )
+    package_root = _ensure_unique_local_dir(runtime_dir / package_base)
+
+    successful_rows = []
+    for row in data_rows or []:
+        if not isinstance(row, dict):
+            continue
+        local_path = Path(str(row.get("本地文件") or "")).expanduser()
+        if str(row.get("下载结果") or "").strip() != "已下载" or not local_path.is_file():
+            continue
+        successful_rows.append((row, local_path))
+
+    zip_path = None
+    if successful_rows:
+        for row, local_path in successful_rows:
+            filename = _safe_local_name(
+                row.get("计划文件名") or row.get("视频ID") or local_path.name,
+                local_path.name,
+            )
+            _copy_file_to_unique_target(local_path, package_root / filename)
+
+        zip_output_root = target_root or default_root
+        zip_output_root.mkdir(parents=True, exist_ok=True)
+        zip_path = _ensure_unique_local_path(zip_output_root / f"{package_root.name}.zip")
+        with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+            for file_path in package_root.rglob("*"):
+                if not file_path.is_file():
+                    continue
+                archive.write(file_path, arcname=str(file_path.relative_to(package_root.parent)))
+        log(f"TikTok creator video package created: {zip_path}")
+
+    final_refs = [*([str(zip_path)] if zip_path else []), *exported_refs]
+
+    if target_root:
+        external_refs = []
+        if zip_path and zip_path.exists() and _is_within_directory(zip_path, target_root):
+            external_refs.append(str(zip_path))
+        elif zip_path and zip_path.exists():
+            external_refs.append(str(_copy_file_to_unique_target(zip_path, target_root / zip_path.name)))
+        for file_path in exported_files or []:
+            source = Path(str(file_path or "")).expanduser()
+            if not source.is_file():
+                continue
+            copied = _copy_file_to_unique_target(source, target_root / source.name)
+            external_refs.append(str(copied))
+        if external_refs:
+            final_refs = external_refs
+
+    _cleanup_semir_runtime_artifacts(runtime_files, package_root)
+    _cleanup_runtime_artifact_dir(str(runtime_dir), preserve_paths=final_refs)
+
+    return final_refs
+
+
 def _rows_raw_to_table(rows_raw, header_row: int = 1):
     if not rows_raw:
         return {"headers": [], "rows": [], "total": 0}
@@ -1791,16 +1974,18 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
 
         bridge = get_bridge()
         run_params = dict(params or {})
+        per_item_review_urls = _resolve_tmall_buyer_review_item_urls(run_params) if (adapter_id, task_id) == ("tmall-ops-assistant", "buyer_reviews") else []
         runtime_options = runtime_options or {}
         task_param_ids = {p.id for p in task.params}
         for p in task.params:
             if p.id not in run_params and p.default is not None:
                 run_params[p.id] = p.default
 
-        mode = str(run_params.get('mode') or ('new' if 'mode' not in task_param_ids else 'current')).strip().lower()
+        mode = _resolve_task_open_mode(adapter_id, task_id, run_params, task_param_ids)
         current_tab_id = str(runtime_options.get('current_tab_id') or '').strip()
         shop_url = str(run_params.get('shop_url') or '').strip()
-        target_entry_url = shop_url or str(task.entry_url or m.entry_url or '').strip()
+        configured_entry_url = shop_url or str(task.entry_url or m.entry_url or '').strip()
+        target_entry_url = _resolve_task_target_entry_url(adapter_id, task_id, run_params, configured_entry_url)
         configured_match_prefixes = list(task.tab_match_prefixes or m.tab_match_prefixes or [])
         platform_name = m.name or adapter_id
 
@@ -1968,6 +2153,21 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
                     log(f"[warn] 深绘图包后处理失败，回退到原始输出: {package_error}")
                     return merge_output_file_refs(runtime_files, exported_files)
 
+            if adapter_id == 'tiktok-ops-assistant' and task_id == 'creator_video_download':
+                try:
+                    packaged_refs = _finalize_tiktok_creator_video_outputs(
+                        data_rows=data_rows,
+                        runtime_files=runtime_files,
+                        exported_files=exported_files,
+                        run_params=run_params,
+                        runtime_artifact_dir=runtime_artifact_dir,
+                        log=log,
+                    )
+                    return merge_output_file_refs(packaged_refs)
+                except Exception as package_error:
+                    log(f"[warn] TikTok 视频打包后处理失败，回退到原始输出: {package_error}")
+                    return merge_output_file_refs(runtime_files, exported_files)
+
             return merge_output_file_refs(runtime_files, exported_files)
 
         # 可选登录检测：若 manifest 配置了 auth.check_script，则最多等 5 分钟
@@ -1990,7 +2190,9 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
                     if mode == 'new':
                         await wait_for_control()
                         log(f"检测到未登录，跳转登录页：{login_url}")
-                        await runner.evaluate(f"location.href = {login_url!r}; ({'{'} success: true, data: [], meta: {{ has_more: false }} {'}'})")
+                        login_nav = await runner.navigate(login_url, wait_seconds=2)
+                        if not login_nav.success:
+                            raise RuntimeError(login_nav.error or f"无法跳转登录页：{login_url}")
                         await asyncio.sleep(2)
                     else:
                         log(f"检测到未登录，请在当前页面完成 {platform_name} 登录…")
@@ -2017,7 +2219,9 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
                     # 登录完成后，重新导航回业务入口页
                     await wait_for_control()
                     log(f"导航回业务入口：{target_entry_url}")
-                    await runner.evaluate(f"location.href = {target_entry_url!r}; ({'{'} success: true, data: [], meta: {{ has_more: false }} {'}'})")
+                    entry_nav = await runner.navigate(target_entry_url, wait_seconds=3)
+                    if not entry_nav.success:
+                        raise RuntimeError(entry_nav.error or f"无法导航回业务入口：{target_entry_url}")
                     await asyncio.sleep(3)
 
         adapter_dir = adapter_loader.get_adapter_dir(adapter_id)
@@ -2027,7 +2231,23 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
 
         await wait_for_control({"records": 0})
         log(f"Injecting script: {task.script}")
-        data = await runner.run_script_file(script_path, params=run_params, control_hook=wait_for_control)
+        if (adapter_id, task_id) == ("tmall-ops-assistant", "buyer_reviews") and per_item_review_urls:
+            aggregated_data = []
+            total_item_count = len(per_item_review_urls)
+            for item_index, item_url in enumerate(per_item_review_urls, start=1):
+                item_params = dict(run_params)
+                item_params["item_links"] = item_url
+                item_params["__item_index__"] = item_index
+                item_params["__item_total__"] = total_item_count
+                log(f"抓取商品 {item_index}/{total_item_count}: {item_url}")
+                item_nav = await runner.navigate(item_url, wait_seconds=2 if item_index == 1 else 1.5)
+                if not item_nav.success:
+                    raise RuntimeError(item_nav.error or f"无法导航到商品页：{item_url}")
+                item_rows = await runner.run_script_file(script_path, params=item_params, control_hook=wait_for_control)
+                aggregated_data.extend(item_rows)
+            data = aggregated_data
+        else:
+            data = await runner.run_script_file(script_path, params=run_params, control_hook=wait_for_control)
         raw_count = len(data)
         data = _apply_final_export_guards(adapter_id, task_id, data)
         deduped_count = len(data)
@@ -2251,6 +2471,7 @@ def enable_adapter(adapter_id: str, req: EnableRequest):
 
 @app.get("/tasks")
 def list_tasks():
+    adapter_loader.scan_all()
     result = []
     scheduled = {j['job_id']: j for j in sched_module.list_jobs()}
     for item in adapter_loader.list_all():

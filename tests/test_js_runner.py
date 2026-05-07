@@ -379,6 +379,45 @@ class ParamReinjectRunner(JSRunner):
         )
 
 
+class MainNavigationRetryRunner(JSRunner):
+    def __init__(self):
+        super().__init__("ws://example.invalid")
+        self.calls = []
+
+    async def _persist_run_params(self, run_token: str, params_json: str) -> None:
+        return None
+
+    async def _clear_run_params(self, run_token: str) -> None:
+        return None
+
+    async def _refresh_ws_url(self) -> None:
+        return None
+
+    async def _reload_current_page(self) -> None:
+        return None
+
+    async def evaluate_with_reconnect(self, expression: str, allow_navigation_retry: bool = False) -> JSResult:
+        phase_raw = _extract_window_assignment(expression, "__CRAWSHRIMP_PHASE__")
+        phase = json.loads(phase_raw) if phase_raw is not None else None
+        self.calls.append({
+            "phase": phase,
+            "allow_navigation_retry": allow_navigation_retry,
+        })
+
+        if phase == "main" and not allow_navigation_retry:
+            return JSResult(success=False, error="{'code': -32000, 'message': 'Inspected target navigated or closed'}")
+
+        return JSResult(
+            success=True,
+            data=[{"ok": True}],
+            meta={
+                "action": "complete",
+                "has_more": False,
+                "shared": {},
+            },
+        )
+
+
 class RuntimeUrlCaptureRunner(JSRunner):
     def __init__(self):
         super().__init__("ws://example.invalid")
@@ -754,6 +793,18 @@ class JSRunnerTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(runner.calls[0]["has_embedded_param_payload"])
         self.assertTrue(runner.calls[1]["has_embedded_param_payload"])
 
+    async def test_run_script_file_retries_main_phase_navigation_errors(self):
+        runner = MainNavigationRetryRunner()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            script_path = Path(tmpdir) / "noop.js"
+            script_path.write_text("({ success: true, data: [], meta: { has_more: false } })", encoding="utf-8")
+            data = await runner.run_script_file(script_path, params={})
+
+        self.assertEqual(data, [{"ok": True}])
+        self.assertEqual(runner.calls[0]["phase"], "main")
+        self.assertTrue(runner.calls[0]["allow_navigation_retry"])
+
     def test_build_phase_preamble_can_run_twice_in_same_node_context(self):
         if shutil.which("node") is None:
             self.skipTest("node not installed")
@@ -814,6 +865,28 @@ class JSRunnerTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertFalse(result.success)
         self.assertEqual(result.error, "SyntaxError: Unexpected token 'catch'")
+
+    async def test_navigate_uses_cdp_page_navigate_and_refreshes_target(self):
+        runner = JSRunner("ws://example.invalid")
+        fake_ws = FakeCDPWebSocket([
+            {"id": 1, "result": {}},
+            {"id": 2, "result": {"frameId": "frame-1"}},
+        ])
+
+        with patch("core.js_runner.websockets.connect", return_value=fake_ws):
+            with patch.object(runner, "_refresh_ws_url") as refresh_ws_url:
+                result = await runner.navigate("https://detail.tmall.com/item.htm?id=919643072179", wait_seconds=0)
+
+        self.assertTrue(result.success)
+        self.assertEqual(
+            [item["method"] for item in fake_ws.sent],
+            ["Page.enable", "Page.navigate"],
+        )
+        self.assertEqual(
+            fake_ws.sent[1]["params"],
+            {"url": "https://detail.tmall.com/item.htm?id=919643072179"},
+        )
+        refresh_ws_url.assert_awaited_once()
 
     async def test_run_script_file_handles_runtime_url_capture_action(self):
         runner = RuntimeUrlCaptureRunner()

@@ -100,6 +100,28 @@ class JSRunner:
                 if msg.get("id") == msg_id:
                     return msg
 
+    async def navigate(self, url: str, wait_seconds: float = 2.0) -> JSResult:
+        target_url = str(url or "").strip()
+        if not target_url:
+            return JSResult(success=False, error="导航 URL 为空")
+        try:
+            await self._cdp_send("Page.enable", {})
+        except Exception:
+            logger.debug("Page.enable failed before navigate", exc_info=True)
+        try:
+            response = await self._cdp_send("Page.navigate", {"url": target_url})
+        except Exception as e:
+            return JSResult(success=False, error=str(e))
+        if "error" in response:
+            return JSResult(success=False, error=str(response.get("error") or "Page.navigate failed"))
+        if wait_seconds > 0:
+            await asyncio.sleep(wait_seconds)
+        try:
+            await self._refresh_ws_url()
+        except Exception:
+            logger.debug("refresh ws url failed after navigate", exc_info=True)
+        return JSResult(success=True, data=[], meta={"has_more": False})
+
     async def cdp_mouse_click(self, x: float, y: float, delay_ms: int = 50) -> None:
         """用 CDP Input.dispatchMouseEvent 在真实坐标上执行鼠标点击。
         这能触发 React 合成事件，而 JS dispatchEvent 无法做到。
@@ -1748,7 +1770,7 @@ class JSRunner:
             "  }\n"
             "})()\n"
         )
-        result = await self.evaluate_with_reconnect(expression)
+        result = await self.evaluate_with_reconnect(expression, allow_navigation_retry=True)
         if not result.success:
             raise RuntimeError(result.error or "failed to persist run params")
 
@@ -1896,7 +1918,7 @@ class JSRunner:
                         payload = preamble + script
                         timeout_retry = False
                         while True:
-                            result = await self.evaluate_with_reconnect(payload, allow_navigation_retry=(phase != "main"))
+                            result = await self.evaluate_with_reconnect(payload, allow_navigation_retry=True)
                             if result.success:
                                 break
                             if result.error != "timeout" or timeout_retry:

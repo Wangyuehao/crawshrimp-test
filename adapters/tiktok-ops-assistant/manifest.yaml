@@ -1,0 +1,268 @@
+id: tiktok-ops-assistant
+name: Tiktok 运营助手
+version: 0.1.0
+author: codex
+description: "TikTok Shop 多区域运营数据抓取：商品评分、联盟达人视频列表与视频下载"
+entry_url: https://seller.us.tiktokshopglobalselling.com/product/rating
+tab_match_prefixes:
+  - https://seller.us.tiktokshopglobalselling.com/
+  - https://seller.eu.tiktokshopglobalselling.com/
+  - https://seller.eu.tiktokglobalshop.com/
+  - https://affiliate.tiktokshopglobalselling.com/
+
+auth:
+  check_script: auth_check.js
+  login_url: https://seller.us.tiktokshopglobalselling.com/
+
+tasks:
+  - id: product_rating
+    name: 商品评分抓取
+    description: 抓取 TikTok Shop Seller Center 商品评分列表，支持多区域和星级筛选，并导出评价原文、商品、订单、用户、回复和图片字段
+    script: product-rating.js
+    entry_url: https://seller.us.tiktokshopglobalselling.com/product/rating
+    skip_auth: false
+    params:
+      - id: mode
+        type: radio
+        label: 打开方式
+        default: current
+        options:
+          - value: current
+            label: 使用当前登录页
+          - value: new
+            label: 新开商品评分页
+      - id: shop_regions
+        type: checkbox
+        label: 店铺区域
+        default: []
+        ui_variant: dropdown_multi
+        placeholder: 默认当前区域；可多选
+        hint: 不选择时使用当前页面或账号默认区域；选择“全部已开通区域”时会按账号已开通店铺区域抓取。
+        options:
+          - value: all
+            label: 全部已开通区域
+          - value: US
+            label: United States
+          - value: GB
+            label: United Kingdom
+          - value: FR
+            label: France
+          - value: DE
+            label: Germany
+          - value: IT
+            label: Italy
+          - value: ES
+            label: Spain
+      - id: star_levels
+        type: checkbox
+        label: 评分筛选
+        default: []
+        ui_variant: dropdown_multi
+        placeholder: 默认全部评分
+        hint: 可多选；不选择则抓取当前区域全部评分。
+        options:
+          - value: "1"
+            label: 1 星
+          - value: "2"
+            label: 2 星
+          - value: "3"
+            label: 3 星
+          - value: "4"
+            label: 4 星
+          - value: "5"
+            label: 5 星
+      - id: page_size
+        type: select
+        label: 每页数量
+        default: "20"
+        ui_span: third
+        hint: TikTok 商品评分接口使用 50 条/页时会稳定漏少量记录；脚本会按 20 条/页抓取以保证全量。
+        options:
+          - value: "20"
+            label: 20 条/页（推荐，完整）
+      - id: max_pages_per_region
+        type: number
+        label: 每区域最多页数
+        default: 200
+        min: 1
+        max: 1000
+        step: 1
+        ui_span: third
+        hint: 防止异常循环；会按接口 total 自动提前停止。
+    trigger:
+      type: manual
+    output:
+      - type: excel
+        filename: "TikTok商品评分_{region_scope}_{timestamp}.xlsx"
+        columns:
+          - 区域
+          - 店铺ID
+          - 店铺名称
+          - 页码
+          - 序号
+          - 评价ID
+          - 评分
+          - 评价时间
+          - 评价时间戳
+          - 评价原文
+          - 用户名
+          - 订单ID
+          - 商品ID
+          - SKU_ID
+          - 商品名称
+          - 商品规格
+          - 你的回复
+          - 回复数
+          - 回复时间
+          - 回复时间戳
+          - 是否可回复
+          - 是否已标记
+          - 是否有图
+          - 评价图片
+          - 商品图片
+          - 筛选摘要
+
+  - id: creator_video_download
+    name: 达人视频下载
+    description: 抓取联盟中心表现-视频列表字段，按视频 ID 获取播放地址，下载视频并导出下载结果表格
+    script: creator-video-download.js
+    entry_url: https://affiliate.tiktokshopglobalselling.com/insights/transaction-analysis
+    skip_auth: false
+    params:
+      - id: mode
+        type: radio
+        label: 打开方式
+        default: current
+        options:
+          - value: current
+            label: 使用当前登录页
+          - value: new
+            label: 新开联盟分析页
+      - id: shop_regions
+        type: checkbox
+        label: 店铺区域
+        default: []
+        ui_variant: dropdown_multi
+        placeholder: 默认当前区域；可多选
+        hint: 不选择时使用当前页面或账号默认区域；选择“全部已开通区域”时会按账号已开通店铺区域抓取。
+        options:
+          - value: all
+            label: 全部已开通区域
+          - value: US
+            label: United States
+          - value: GB
+            label: United Kingdom
+          - value: FR
+            label: France
+          - value: DE
+            label: Germany
+          - value: IT
+            label: Italy
+          - value: ES
+            label: Spain
+      - id: time_range
+        type: select
+        label: 视频统计日期
+        default: last7
+        hint: 与 TikTok 页面快捷项保持一致；平台仅显示过去 90 天数据，时间边界按 GMT-8 统计。
+        options:
+          - value: last7
+            label: 最近7天
+          - value: last28
+            label: 最近28天
+          - value: last_week
+            label: 上周
+          - value: custom
+            label: 自定义日期
+      - id: date_range
+        type: date_range
+        label: 自定义日期
+        hint: 仅在选择“自定义日期”时填写；需落在过去 90 天内，TikTok 联盟接口使用 GMT-8 整日边界。
+        visible_when:
+          field: time_range
+          equals: custom
+      - id: page_size
+        type: select
+        label: 每页数量
+        default: "20"
+        ui_span: third
+        options:
+          - value: "20"
+            label: 20 条/页（推荐）
+          - value: "50"
+            label: 50 条/页
+      - id: max_pages_per_region
+        type: number
+        label: 每区域最多页数
+        default: 50
+        min: 1
+        max: 500
+        step: 1
+        ui_span: third
+      - id: download_concurrency
+        type: number
+        label: 视频下载并发
+        default: 2
+        min: 1
+        max: 4
+        step: 1
+        ui_span: third
+        hint: 视频用浏览器会话下载；并发过高可能触发平台限流。
+      - id: product_id
+        type: text
+        label: 商品ID
+        placeholder: "只下载指定商品 ID 的视频"
+        hint: 可选。对应页面的“商品 ID”搜索，填写后只抓取该商品的视频并下载。
+        ui_span: third
+      - id: output_dir
+        type: directory
+        label: 下载目录
+        placeholder: "点击选择下载目录"
+        hint: 可选。完成后会把视频 ZIP 和结果表输出到这里；运行时中间文件会自动清理
+        ui_span: third
+      - id: package_name
+        type: text
+        label: 导出包名称
+        placeholder: "默认：达人视频下载_任务执行时间"
+        hint: 可选。留空则按脚本名称 + 任务执行时间命名 ZIP 包
+        ui_span: third
+    trigger:
+      type: manual
+    output:
+      - type: excel
+        filename: "TikTok达人视频下载_{region_scope}_{timestamp}.xlsx"
+        columns:
+          - 区域
+          - 店铺ID
+          - 店铺名称
+          - 页码
+          - 序号
+          - 视频ID
+          - 播放ID
+          - 视频标题
+          - 视频发布时间
+          - 视频发布时间戳
+          - 达人ID
+          - 达人账号
+          - 达人昵称
+          - 粉丝数
+          - 商品ID
+          - 商品名称
+          - 类目
+          - 联盟视频归因GMV
+          - 视频归因成交件数
+          - 退款金额
+          - 已退款的商品件数
+          - 归因于视频的订单数
+          - 平均订单金额
+          - 每位客户的平均GMV
+          - 预计佣金
+          - 视频时长秒
+          - 视频宽度
+          - 视频高度
+          - 视频封面
+          - 视频下载URL
+          - 计划文件名
+          - 下载结果
+          - 本地文件
+          - 下载备注

@@ -82,6 +82,11 @@ const TASK_PROGRESS_RULES = Object.freeze([
     taskId: 'prepare_upload_package',
     config: ENHANCED_TASK_RUNNER_ONLY_CONFIG,
   }),
+  Object.freeze({
+    adapterId: 'tiktok-ops-assistant',
+    taskId: 'creator_video_download',
+    config: ENHANCED_TASK_RUNNER_ONLY_CONFIG,
+  }),
 ])
 
 function normalizeKeyPart(value) {
@@ -383,6 +388,112 @@ function isSemirBatchAiGenerateTask(adapterId, taskId) {
 
 function isShenhuiPrepareUploadPackageTask(adapterId, taskId) {
   return normalizeKeyPart(adapterId) === 'shenhui-new-arrival' && normalizeKeyPart(taskId) === 'prepare_upload_package'
+}
+
+function isTiktokCreatorVideoDownloadTask(adapterId, taskId) {
+  return normalizeKeyPart(adapterId) === 'tiktok-ops-assistant' && normalizeKeyPart(taskId) === 'creator_video_download'
+}
+
+function getTiktokCreatorVideoPhaseLabel(phase, downloadStarted, downloadActive, downloadCompleted, downloadTotal) {
+  const normalizedPhase = normalizeKeyPart(phase)
+  if (normalizedPhase === 'after_download' || downloadActive) return '批量下载'
+  if (downloadStarted && downloadTotal > 0 && downloadCompleted >= downloadTotal) return '下载完成'
+  if (normalizedPhase === 'main') return '探查视频'
+  return '准备中'
+}
+
+function buildTiktokCreatorVideoDownloadProgress(live = {}, liveStatus = '', isRunning = false) {
+  if (!isRunning && !isTaskLiveActive(liveStatus || live?.status)) return null
+
+  const phase = String(live?.phase || '').trim()
+  const statusLabel = getStatusLabel(liveStatus || live?.status)
+  const currentVideoId = String(live?.buyer_id || '').trim()
+  const store = String(live?.store || '').trim()
+
+  const searchTotal = toInt(live?.search_total_codes) || toInt(live?.total)
+  const searchCompletedRaw = toInt(live?.search_completed_codes) || toInt(live?.current)
+  const searchCompleted = searchTotal > 0 ? Math.min(searchCompletedRaw, searchTotal) : searchCompletedRaw
+  const searchPercent = searchTotal > 0 ? clampPercent((searchCompleted / searchTotal) * 100) : 0
+
+  const downloadTotal = toInt(live?.download_total)
+  const downloadCompletedRaw = toInt(live?.download_completed)
+  const downloadCompleted = downloadTotal > 0 ? Math.min(downloadCompletedRaw, downloadTotal) : downloadCompletedRaw
+  const downloadSuccess = toInt(live?.download_success)
+  const downloadFailed = toInt(live?.download_failed)
+  const downloadConcurrency = toInt(live?.download_concurrency)
+  const downloadRetryAttempts = toInt(live?.download_retry_attempts)
+  const downloadCurrentLabel = String(live?.download_current_label || '').trim()
+  const downloadLastLabel = String(live?.download_last_label || '').trim()
+  const downloadStarted = Boolean(live?.download_started) || downloadTotal > 0
+  const downloadActive = Boolean(live?.download_active) || (downloadStarted && downloadTotal > 0 && downloadCompleted < downloadTotal)
+  const downloadPercent = downloadTotal > 0
+    ? clampPercent((downloadCompleted / downloadTotal) * 100)
+    : (downloadStarted && !downloadActive ? 100 : 0)
+
+  const phaseLabel = getTiktokCreatorVideoPhaseLabel(phase, downloadStarted, downloadActive, downloadCompleted, downloadTotal) || statusLabel
+
+  const tracks = [
+    buildTrack({
+      id: 'tiktok-probe',
+      title: '第一阶段 · 探查视频',
+      main: searchTotal > 0 ? `${searchCompleted} / ${searchTotal} 条视频` : (statusLabel || '等待开始'),
+      percentValue: searchPercent,
+      percentLabel: `${searchPercent}%`,
+      caption: currentVideoId ? `当前视频 ${currentVideoId}` : '',
+      detail: store || '',
+      status: downloadStarted || (searchTotal > 0 && searchCompleted >= searchTotal) ? '已完成' : '进行中',
+      tone: 'primary',
+      state: downloadStarted || (searchTotal > 0 && searchCompleted >= searchTotal) ? 'complete' : (searchCompleted > 0 ? 'active' : 'pending'),
+      ariaLabel: '探查视频进度',
+      ariaText: [searchTotal > 0 ? `${searchCompleted}/${searchTotal} 条视频` : '', `${searchPercent}%`, currentVideoId ? `当前视频 ${currentVideoId}` : '', store].filter(Boolean).join('，'),
+    }),
+    buildTrack({
+      id: 'tiktok-download',
+      title: '第二阶段 · 批量下载',
+      main: downloadTotal > 0 ? `${downloadCompleted} / ${downloadTotal} 个视频` : (downloadStarted ? '等待下载进度' : '探查完成后自动开始'),
+      percentValue: downloadPercent,
+      percentLabel: downloadStarted ? `${downloadPercent}%` : '待开始',
+      caption: [
+        downloadSuccess > 0 ? `成功 ${downloadSuccess}` : '',
+        downloadFailed > 0 ? `失败 ${downloadFailed}` : '',
+        downloadConcurrency > 0 ? `并发 ${downloadConcurrency}` : '',
+        downloadRetryAttempts > 1 ? `重试 ${downloadRetryAttempts} 次` : '',
+      ].filter(Boolean).join(' · ') || (downloadStarted ? '正在汇总下载结果' : '探查完成后进入下载阶段'),
+      detail: downloadCurrentLabel
+        ? `正在下载 ${downloadCurrentLabel}`
+        : (downloadLastLabel ? `最近视频 ${downloadLastLabel}` : ''),
+      status: !downloadStarted ? '待开始' : downloadCompleted >= downloadTotal && downloadTotal > 0 ? '已完成' : '进行中',
+      tone: 'secondary',
+      state: !downloadStarted ? 'pending' : downloadCompleted >= downloadTotal && downloadTotal > 0 ? 'complete' : 'active',
+      ariaLabel: '批量下载进度',
+      ariaText: [downloadTotal > 0 ? `${downloadCompleted}/${downloadTotal} 个视频` : '', downloadStarted ? `${downloadPercent}%` : '待开始', downloadCurrentLabel || downloadLastLabel].filter(Boolean).join('，'),
+    }),
+  ]
+
+  return {
+    title: '双阶段进度',
+    main: phaseLabel,
+    percentValue: downloadStarted ? clampPercent(50 + (downloadPercent * 0.5)) : clampPercent(searchPercent * 0.5),
+    percentLabel: phaseLabel,
+    completed: downloadSuccess,
+    completedText: downloadSuccess > 0 ? `已下载 ${downloadSuccess} 个视频` : '',
+    batchText: '',
+    rowText: '',
+    targetText: currentVideoId ? `视频 ${currentVideoId}` : '',
+    storeText: store || '',
+    phaseText: phase ? `阶段 ${phase}` : '',
+    indeterminate: false,
+    ariaLabel: 'TikTok 达人视频双阶段进度',
+    ariaText: [phaseLabel, searchTotal > 0 ? `${searchCompleted}/${searchTotal} 条视频` : '', downloadTotal > 0 ? `${downloadCompleted}/${downloadTotal} 个视频` : ''].filter(Boolean).join('，'),
+    metaItems: buildMetaItems([
+      searchTotal > 0 ? `探查 ${searchCompleted}/${searchTotal}` : '',
+      downloadTotal > 0 ? `下载 ${downloadCompleted}/${downloadTotal}` : '',
+      currentVideoId ? `视频 ${currentVideoId}` : '',
+      store,
+    ]),
+    tracks,
+    sub: [phaseLabel, downloadFailed > 0 ? `下载失败 ${downloadFailed} 个` : '', store].filter(Boolean).join(' · ') || statusLabel,
+  }
 }
 
 function getSemirPhaseLabel(phase, downloadStarted, downloadActive, downloadCompleted, downloadTotal) {
@@ -855,6 +966,9 @@ export function buildTaskRunnerProgressSummary({
   }
   if (config.mode === 'enhanced' && isShenhuiPrepareUploadPackageTask(adapterId, taskId)) {
     return buildShenhuiPrepareUploadPackageProgress(live, liveStatus, isRunning)
+  }
+  if (config.mode === 'enhanced' && isTiktokCreatorVideoDownloadTask(adapterId, taskId)) {
+    return buildTiktokCreatorVideoDownloadProgress(live, liveStatus, isRunning)
   }
   if (config.mode === 'enhanced' && isSemirBatchAiGenerateTask(adapterId, taskId)) {
     return buildSemirBatchAiGenerateProgress(live, liveStatus, isRunning)
