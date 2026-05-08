@@ -118,3 +118,62 @@ test('ensureReady retries a backend launch that exits before ready', async () =>
 
   assert.equal(startCount, 2)
 })
+
+test('runWhenReady retries the operation after a retryable connection error', async () => {
+  let probeCount = 0
+  let operationCount = 0
+
+  const controller = createBackendController({
+    log: () => {},
+    sendStatus: () => {},
+    probeReady: async () => {
+      probeCount += 1
+      return probeCount === 1 || probeCount >= 3
+    },
+    startProcess: () => new EventEmitter(),
+    intervalMs: 1,
+    attempts: 5,
+  })
+
+  const result = await controller.runWhenReady(async () => {
+    operationCount += 1
+    if (operationCount === 1) {
+      const error = new Error('connect ECONNREFUSED 127.0.0.1:18765')
+      error.code = 'ECONNREFUSED'
+      throw error
+    }
+    return 'ok'
+  }, {
+    retries: 1,
+    retryDelayMs: 1,
+    retryableCodes: new Set(['ECONNREFUSED']),
+  })
+
+  assert.equal(result, 'ok')
+  assert.equal(operationCount, 2)
+})
+
+test('runWhenReady can replace exhausted retryable connection errors with diagnostics', async () => {
+  const controller = createBackendController({
+    log: () => {},
+    sendStatus: () => {},
+    probeReady: async () => true,
+    startProcess: () => new EventEmitter(),
+    intervalMs: 1,
+    attempts: 5,
+  })
+
+  await assert.rejects(
+    controller.runWhenReady(async () => {
+      const error = new Error('connect ECONNREFUSED 127.0.0.1:18765')
+      error.code = 'ECONNREFUSED'
+      throw error
+    }, {
+      retries: 1,
+      retryDelayMs: 1,
+      retryableCodes: new Set(['ECONNREFUSED']),
+      describeFailure: (error) => new Error(`核心服务暂时不可用：${error.message}`),
+    }),
+    /核心服务暂时不可用：connect ECONNREFUSED/
+  )
+})

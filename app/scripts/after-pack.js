@@ -16,7 +16,16 @@
 const fs   = require('fs')
 const path = require('path')
 
-exports.default = async function afterPack(context) {
+function requirePythonBundle(srcPython) {
+  if (!fs.existsSync(srcPython)) {
+    throw new Error(
+      `[after-pack] bundled Python not found at ${srcPython}. ` +
+      'Run app/scripts/download-python.sh before building the desktop package.'
+    )
+  }
+}
+
+async function afterPack(context) {
   const { electronPlatformName, arch, appOutDir } = context
   // arch: 0=ia32, 1=x64, 2=armv7l, 3=arm64
   const archName = arch === 3 ? 'arm64' : 'x64'
@@ -33,12 +42,7 @@ exports.default = async function afterPack(context) {
 
   const scriptDir = path.dirname(__dirname)  // app/
   const srcPython = path.join(scriptDir, 'python-dist', srcKey)
-
-  if (!fs.existsSync(srcPython)) {
-    console.warn(`[after-pack] WARN: bundled Python not found at ${srcPython}`)
-    console.warn('[after-pack] Run app/scripts/download-python.sh first')
-    return
-  }
+  requirePythonBundle(srcPython)
 
   let resourcesPath
   if (electronPlatformName === 'darwin') {
@@ -82,3 +86,6 @@ function copyDirSync(src, dest) {
     }
   }
 }
+
+exports.default = afterPack
+exports.requirePythonBundle = requirePythonBundle

@@ -113,6 +113,37 @@ function createBackendController(options) {
     }
   }
 
+  async function runWhenReady(operation, options = {}) {
+    const retries = Math.max(0, Number(options.retries || 0))
+    const retryDelayMs = Math.max(0, Number(options.retryDelayMs || 0))
+    const retryableCodes = options.retryableCodes || new Set()
+    const describeFailure = typeof options.describeFailure === 'function'
+      ? options.describeFailure
+      : null
+
+    let lastError = null
+    for (let attempt = 0; attempt <= retries; attempt += 1) {
+      await ensureReady()
+      try {
+        return await operation()
+      } catch (error) {
+        lastError = error
+        const isRetryable = retryableCodes.has(error?.code)
+        if (!isRetryable || attempt === retries) {
+          if (isRetryable && describeFailure) {
+            throw describeFailure(error)
+          }
+          throw error
+        }
+        markNotReady()
+        if (retryDelayMs > 0) {
+          await sleep(retryDelayMs)
+        }
+      }
+    }
+    throw lastError
+  }
+
   function stop() {
     if (!backendProcess) return
     const proc = backendProcess
@@ -126,6 +157,7 @@ function createBackendController(options) {
 
   return {
     ensureReady,
+    runWhenReady,
     stop,
   }
 }

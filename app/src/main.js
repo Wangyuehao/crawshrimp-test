@@ -111,6 +111,10 @@ function getCrawshrimpDataDir() {
   return process.env.CRAWSHRIMP_DATA || path.join(app.getPath('home'), '.crawshrimp')
 }
 
+function getDesktopLogPath() {
+  return path.join(getCrawshrimpDataDir(), 'logs', 'desktop.log')
+}
+
 function getApiServerScript() {
   if (!IS_DEV) return path.join(process.resourcesPath, 'python-scripts', 'core', 'api_server.py')
   return path.join(__dirname, '..', '..', 'core', 'api_server.py')
@@ -663,24 +667,16 @@ function apiCall(method, urlPath, body = null, options = {}) {
 
   const retryableCodes = new Set(['ECONNREFUSED', 'ECONNRESET', 'EPIPE'])
 
-  return (async () => {
-    if (options.ensureReady !== false) {
-      await backendController.ensureReady()
-    }
-    let lastError = null
-    for (let attempt = 0; attempt <= retries; attempt++) {
-      try {
-        return await doRequest()
-      } catch (error) {
-        lastError = error
-        if (!retryableCodes.has(error?.code) || attempt === retries) {
-          throw error
-        }
-        await new Promise(resolve => setTimeout(resolve, retryDelayMs))
-      }
-    }
-    throw lastError
-  })()
+  if (options.ensureReady === false) {
+    return doRequest()
+  }
+
+  return backendController.runWhenReady(doRequest, {
+    retries,
+    retryDelayMs,
+    retryableCodes,
+    describeFailure: describeApiCallFailure,
+  })
 }
 
 // ── Utilities ─────────────────────────────────────────────────────────────────
@@ -719,13 +715,25 @@ function log(msg) {
   const line = `[${ts}] ${msg}`
   console.log(line)
   try {
-    const logDir = path.join(getCrawshrimpDataDir(), 'logs')
+    const logDir = path.dirname(getDesktopLogPath())
     fs.mkdirSync(logDir, { recursive: true })
-    fs.appendFileSync(path.join(logDir, 'desktop.log'), line + '\n', 'utf8')
+    fs.appendFileSync(getDesktopLogPath(), line + '\n', 'utf8')
   } catch {}
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.webContents.send('log', line)
   }
+}
+
+function describeApiCallFailure(error) {
+  const message = [
+    `核心服务未能连接：${error?.message || String(error)}`,
+    `请重启抓虾；如果仍失败，把日志发给开发者：${getDesktopLogPath()}`,
+    `Python: ${getPythonBin()}`,
+    `资源目录: ${process.resourcesPath}`,
+  ].join('\n')
+  const wrapped = new Error(message)
+  wrapped.code = error?.code
+  return wrapped
 }
 
 function sendStatus(key, value) {
