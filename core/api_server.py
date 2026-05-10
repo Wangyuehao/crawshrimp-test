@@ -2529,7 +2529,7 @@ async def lifespan(app: FastAPI):
         instance_lock.close()
 
 
-app = FastAPI(title="crawshrimp", version="1.4.10", lifespan=lifespan)
+app = FastAPI(title="crawshrimp", version="1.4.11", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"]
 )
