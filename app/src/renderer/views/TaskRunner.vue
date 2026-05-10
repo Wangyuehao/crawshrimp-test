@@ -1768,6 +1768,15 @@ function getLinkedDateRangeIdForSelect(paramId) {
   if (!selectSupportsCustom(selectParam)) return null
   const explicit = params.find(p => isRangeParamType(p.type) && p.id === 'custom_range')
   if (explicit) return explicit.id
+  const samePrefix = params.find(p => isRangeParamType(p.type) && p.id === paramId.replace(/_range$/, '') + '_range')
+  if (samePrefix) return samePrefix.id
+  const matchingVisible = params.find(p =>
+    isRangeParamType(p.type) &&
+    normalizeVisibleWhenRules(p.visible_when).some(rule =>
+      String(rule.field || rule.param_id || rule.id || '').trim() === paramId
+    )
+  )
+  if (matchingVisible) return matchingVisible.id
   const dateRanges = params.filter(p => isRangeParamType(p.type))
   return dateRanges.length === 1 ? dateRanges[0].id : null
 }
@@ -1777,7 +1786,19 @@ function getControllerSelectForDateRange(paramId) {
   if (paramId === 'custom_range') {
     return params.find(p => p.type === 'select' && selectSupportsCustom(p)) || null
   }
+  const rangeParam = params.find(p => p.id === paramId)
+  const visibleRules = normalizeVisibleWhenRules(rangeParam?.visible_when)
+  for (const rule of visibleRules) {
+    const field = String(rule.field || rule.param_id || rule.id || '').trim()
+    const select = params.find(p => p.id === field && p.type === 'select' && selectSupportsCustom(p))
+    if (select) return select
+  }
   return null
+}
+
+function normalizeVisibleWhenRules(visibleWhen) {
+  if (!visibleWhen) return []
+  return Array.isArray(visibleWhen) ? visibleWhen : [visibleWhen]
 }
 
 function shouldShowInlineCustomDate(param) {

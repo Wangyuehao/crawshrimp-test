@@ -81,7 +81,7 @@ def finish_run(run_id: int, records_count: int, output_files: List[str]):
     with _get_conn() as conn:
         conn.execute("""
             UPDATE task_runs
-            SET status='done', finished_at=?, records_count=?, output_files=?
+            SET status='done', finished_at=?, records_count=?, output_files=?, error=NULL
             WHERE id=?
         """, (datetime.now().isoformat(), records_count, json.dumps(output_files), run_id))
         conn.commit()

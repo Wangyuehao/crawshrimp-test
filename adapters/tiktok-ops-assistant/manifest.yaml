@@ -163,9 +163,11 @@ tasks:
       - id: time_range
         type: select
         label: 视频统计日期
-        default: last7
-        hint: 与 TikTok 页面快捷项保持一致；平台仅显示过去 90 天数据，时间边界按 GMT-8 统计。
+        default: page
+        hint: 默认沿用当前 TikTok 页面上的统计日期；只有主动选择快捷项或自定义日期时才覆盖页面筛选。
         options:
+          - value: page
+            label: 沿用页面当前筛选
           - value: last7
             label: 最近7天
           - value: last28
@@ -181,6 +183,11 @@ tasks:
         visible_when:
           field: time_range
           equals: custom
+      - id: publish_date_range
+        type: date_range
+        label: 视频发布时间
+        hint: 可选。对应页面视频 Tab 的“发布日期”筛选，按 GMT-8 整日边界过滤视频发布时间。
+        ui_span: half
       - id: page_size
         type: select
         label: 每页数量

@@ -8,6 +8,7 @@ import yaml
 from core.api_server import (
     _cleanup_orphaned_runtime_artifacts,
     _finalize_tiktok_creator_video_outputs,
+    _verify_tiktok_creator_video_download_rows,
 )
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -21,12 +22,14 @@ class TiktokCreatorVideoPackagingTests(unittest.TestCase):
         params = {item["id"]: item for item in task["params"]}
 
         self.assertEqual(params["time_range"]["type"], "select")
-        self.assertEqual(params["time_range"]["default"], "last7")
+        self.assertEqual(params["time_range"]["default"], "page")
         self.assertEqual(
             [item["value"] for item in params["time_range"]["options"]],
-            ["last7", "last28", "last_week", "custom"],
+            ["page", "last7", "last28", "last_week", "custom"],
         )
         self.assertEqual(params["date_range"]["visible_when"], {"field": "time_range", "equals": "custom"})
+        self.assertEqual(params["publish_date_range"]["type"], "date_range")
+        self.assertIn("视频发布时间", params["publish_date_range"]["label"])
         self.assertEqual(params["product_id"]["type"], "text")
         self.assertIn("商品ID", params["product_id"]["label"])
         self.assertEqual(params["package_name"]["type"], "text")
@@ -152,6 +155,39 @@ class TiktokCreatorVideoPackagingTests(unittest.TestCase):
 
             self.assertEqual(result, [str(exported)])
             self.assertFalse(runtime_dir.exists())
+
+    def test_verify_download_rows_downgrades_missing_local_files_before_excel_export(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base = Path(tmpdir)
+            existing = base / "US_761_a.mp4"
+            existing.write_bytes(b"video")
+            missing = base / "US_761_b.mp4"
+            logs = []
+
+            rows = [
+                {
+                    "视频ID": "761_a",
+                    "下载结果": "已下载",
+                    "本地文件": str(existing),
+                    "下载备注": "文件=US_761_a.mp4; 字节=5",
+                },
+                {
+                    "视频ID": "761_b",
+                    "下载结果": "已下载",
+                    "本地文件": str(missing),
+                    "下载备注": "文件=US_761_b.mp4; 字节=5",
+                },
+            ]
+
+            verified = _verify_tiktok_creator_video_download_rows(rows, log=logs.append)
+
+            self.assertIs(verified, rows)
+            self.assertEqual(rows[0]["下载结果"], "已下载")
+            self.assertEqual(rows[0]["本地文件"], str(existing))
+            self.assertEqual(rows[1]["下载结果"], "下载失败")
+            self.assertEqual(rows[1]["本地文件"], "")
+            self.assertIn("下载完成后本地文件缺失", rows[1]["下载备注"])
+            self.assertTrue(any("1/2" in line for line in logs))
 
     def test_orphaned_active_run_cleanup_removes_runtime_download_artifacts(self):
         with tempfile.TemporaryDirectory() as tmpdir:

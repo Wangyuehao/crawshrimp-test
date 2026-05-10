@@ -164,8 +164,16 @@
 
   function latestSelectableDateStartTime() {
     const now = new Date()
-    const latestDate = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 2)
-    return localDateToEpochAtOffset(latestDate, GMT8_OFFSET_SECONDS, false)
+    const platformNow = new Date(now.getTime() + GMT8_OFFSET_SECONDS * 1000)
+    const latestLocalMs = Date.UTC(
+      platformNow.getUTCFullYear(),
+      platformNow.getUTCMonth(),
+      platformNow.getUTCDate() - 3,
+      0,
+      0,
+      0,
+    )
+    return Math.floor(latestLocalMs / 1000) - GMT8_OFFSET_SECONDS
   }
 
   function latestSelectableEndTime() {
@@ -211,9 +219,31 @@
     return createTimeDescriptor(startTime, endTime)
   }
 
+  function validatePublishDateRange(range) {
+    if (!range) return null
+    const startTime = dateToEpochAtOffset(range.start, GMT8_OFFSET_SECONDS, false)
+    const endTime = dateToEpochAtOffset(range.end, GMT8_OFFSET_SECONDS, true) + 1
+    if (endTime <= startTime) throw new Error('视频发布时间结束时间不能早于开始时间')
+
+    const latestEnd = latestSelectableEndTime()
+    if (endTime > latestEnd) {
+      throw new Error(`TikTok 页面最晚只能选择到 ${epochToDateTextAtOffset(latestSelectableDateStartTime(), GMT8_OFFSET_SECONDS)}，请调整视频发布时间范围`)
+    }
+    const earliestStart = latestEnd - TIKTOK_MAX_RANGE_DAYS * DAY_SECONDS
+    if (startTime < earliestStart || endTime - startTime > TIKTOK_MAX_RANGE_DAYS * DAY_SECONDS) {
+      throw new Error('TikTok 页面仅显示过去 90 天的视频发布时间，请缩短或调整筛选范围')
+    }
+    return {
+      start_time: startTime,
+      end_time: endTime,
+      timezone_offset: GMT8_OFFSET_SECONDS,
+    }
+  }
+
   function normalizeTimeRange(value) {
     const text = compact(value).toLowerCase()
-    if (!text || text === 'last7' || text === 'recent7' || text === '最近7天') return 'last7'
+    if (!text || text === 'page' || text === 'current' || text === '页面当前筛选' || text === '沿用页面当前筛选') return 'page'
+    if (text === 'last7' || text === 'recent7' || text === '最近7天') return 'last7'
     if (text === 'last28' || text === 'recent28' || text === '最近28天') return 'last28'
     if (text === 'last_week' || text === 'lastweek' || text === '上周') return 'last_week'
     if (text === 'custom' || text === '自定义' || text === '自定义日期') return 'custom'
@@ -222,6 +252,36 @@
 
   function defaultTimeDescriptor() {
     return recentDaysTimeDescriptor(7)
+  }
+
+  function parsePageDateText(value) {
+    const text = compact(value)
+    const match = text.match(/(\d{4})[/-](\d{1,2})[/-](\d{1,2})/)
+    if (!match) return ''
+    return `${match[1]}-${String(match[2]).padStart(2, '0')}-${String(match[3]).padStart(2, '0')}`
+  }
+
+  function readPageTimeDescriptor() {
+    const selectors = [
+      '.m4b-date-picker-range',
+      '.gec-date-picker-range',
+      '[class*="date-picker-range"]',
+      '[class*="DatePickerRange"]',
+    ]
+    for (const selector of selectors) {
+      const nodes = Array.from(document.querySelectorAll(selector) || [])
+      for (const node of nodes) {
+        const inputs = Array.from(node.querySelectorAll?.('input') || [])
+          .map(input => parsePageDateText(input?.value || input?.placeholder || ''))
+          .filter(Boolean)
+        if (inputs.length >= 2) {
+          const startTime = dateToEpochAtOffset(inputs[0], GMT8_OFFSET_SECONDS, false)
+          const endTime = dateToEpochAtOffset(inputs[1], GMT8_OFFSET_SECONDS, true) + 1
+          if (endTime > startTime) return createTimeDescriptor(startTime, endTime)
+        }
+      }
+    }
+    return null
   }
 
   function resolveTimeDescriptor() {
@@ -245,7 +305,20 @@
     if (timeRange === 'last7') {
       return defaultTimeDescriptor()
     }
-    return defaultTimeDescriptor()
+    return readPageTimeDescriptor() || defaultTimeDescriptor()
+  }
+
+  function resolvePublishDateDescriptor() {
+    if (shared.publish_date_descriptor && typeof shared.publish_date_descriptor === 'object') {
+      return { ...shared.publish_date_descriptor }
+    }
+    const range = parseDateRangeParam(
+      params.publish_date_range ||
+      params.video_publish_date_range ||
+      params.video_post_date ||
+      params.post_date_range
+    )
+    return validatePublishDateRange(range)
   }
 
   function buildUrl(context, region) {
@@ -326,6 +399,13 @@
 
   function resolveProductIdFilter() {
     return compact(params.product_id || params.productId || params.item_id || params.itemId)
+  }
+
+  function buildRequestFilter(productIdFilter, publishDateDescriptor) {
+    const filter = {}
+    if (productIdFilter) filter.product_id = productIdFilter
+    if (publishDateDescriptor) filter.video_post_date = publishDateDescriptor
+    return filter
   }
 
   function filenameTime(value) {
@@ -551,6 +631,7 @@
 
     const timeDescriptor = resolveTimeDescriptor()
     const productIdFilter = resolveProductIdFilter()
+    const publishDateDescriptor = resolvePublishDateDescriptor()
     const requestContext = {
       ...context,
       region,
@@ -571,7 +652,7 @@
               sort_type: 1,
               order_type: 1,
             },
-            filter: productIdFilter ? { product_id: productIdFilter } : {},
+            filter: buildRequestFilter(productIdFilter, publishDateDescriptor),
           },
         ],
       },
@@ -623,6 +704,7 @@
       page_size: pageSize,
       max_pages_per_region: maxPages,
       time_descriptor: segment.time_descriptor || timeDescriptor,
+      publish_date_descriptor: publishDateDescriptor,
       pendingRows: accumulatedRows,
       pendingDownloads: accumulatedDownloads,
       next_region_index: cursor.regionIndex,

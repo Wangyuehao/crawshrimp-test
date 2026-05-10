@@ -15,6 +15,7 @@ import logging
 import os
 import re
 import shutil
+import socket
 import tempfile
 import zipfile
 from contextlib import asynccontextmanager
@@ -58,6 +59,89 @@ RUNTIME_CLEANUP_TASKS = {
     ("shenhui-new-arrival", "prepare_upload_package"),
     ("tiktok-ops-assistant", "creator_video_download"),
 }
+
+BACKEND_LOCK_DIR = Path(os.environ.get("CRAWSHRIMP_BACKEND_LOCK_DIR", str(Path.home() / ".crawshrimp")))
+BACKEND_LOCK_PATH = BACKEND_LOCK_DIR / "backend.lock"
+
+
+class BackendInstanceLock:
+    def __init__(self, file_path: Path):
+        self.file_path = file_path
+        self.handle = None
+        self.acquired = False
+
+    def acquire(self) -> bool:
+        self.file_path.parent.mkdir(parents=True, exist_ok=True)
+        self.handle = self.file_path.open("a+")
+        if os.name == "nt":
+            try:
+                import msvcrt
+
+                msvcrt.locking(self.handle.fileno(), msvcrt.LK_NBLCK, 1)
+            except OSError:
+                self.acquired = False
+                return False
+        else:
+            try:
+                import fcntl
+
+                fcntl.flock(self.handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                self.acquired = False
+                return False
+            except OSError:
+                self.acquired = False
+                return False
+        try:
+            self.handle.seek(0)
+            self.handle.truncate()
+            self.handle.write(str(os.getpid()))
+            self.handle.flush()
+        except Exception:
+            logger.debug("Failed to write backend instance lock metadata", exc_info=True)
+            self.acquired = False
+            return False
+        self.acquired = True
+        return True
+
+    def close(self) -> None:
+        if not self.handle:
+            return
+        try:
+            if self.acquired:
+                if os.name == "nt":
+                    import msvcrt
+
+                    self.handle.seek(0)
+                    msvcrt.locking(self.handle.fileno(), msvcrt.LK_UNLCK, 1)
+                else:
+                    import fcntl
+
+                    fcntl.flock(self.handle.fileno(), fcntl.LOCK_UN)
+        except Exception:
+            logger.debug("Failed to release backend instance lock", exc_info=True)
+        try:
+            self.handle.close()
+        finally:
+            self.handle = None
+            self.acquired = False
+
+
+def _acquire_backend_instance_lock() -> BackendInstanceLock:
+    lock = BackendInstanceLock(BACKEND_LOCK_PATH)
+    lock.acquire()
+    return lock
+
+
+def _is_backend_port_available() -> bool:
+    port = int(os.environ.get("CRAWSHRIMP_PORT", 18765))
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            sock.bind(("127.0.0.1", port))
+        except OSError:
+            return False
+    return True
 
 
 def _build_run_control() -> dict:
@@ -920,6 +1004,46 @@ def _cleanup_orphaned_runtime_artifacts(runs: Optional[list] = None) -> None:
         _cleanup_runtime_artifact_dir(str(runtime_dir), preserve_paths=[])
 
 
+def _append_note(existing: object, note: str) -> str:
+    current = str(existing or "").strip()
+    clean_note = str(note or "").strip()
+    if not current:
+        return clean_note
+    if not clean_note or clean_note in current:
+        return current
+    return f"{current}; {clean_note}"
+
+
+def _verify_tiktok_creator_video_download_rows(data_rows: list, log=None) -> list:
+    success_total = 0
+    missing_rows = []
+    for row in data_rows or []:
+        if not isinstance(row, dict):
+            continue
+        if str(row.get("下载结果") or "").strip() != "已下载":
+            continue
+        success_total += 1
+        local_path_text = str(row.get("本地文件") or "").strip()
+        local_path = Path(local_path_text).expanduser() if local_path_text else None
+        if local_path and local_path.is_file() and local_path.stat().st_size > 0:
+            continue
+        missing_rows.append(row)
+
+    for row in missing_rows:
+        row["下载结果"] = "下载失败"
+        row["下载备注"] = _append_note(row.get("下载备注"), "下载完成后本地文件缺失，未打包")
+        row["本地文件"] = ""
+
+    if missing_rows and log:
+        available = success_total - len(missing_rows)
+        log(
+            "TikTok creator video local file check: "
+            f"{available}/{success_total} downloaded files still exist; "
+            f"{len(missing_rows)} missing rows marked failed before export"
+        )
+    return data_rows
+
+
 def _default_output_root_for_runtime(runtime_dir: Path, exported_files: list) -> Path:
     exported_refs = [str(path or "").strip() for path in exported_files or [] if str(path or "").strip()]
     if exported_refs:
@@ -1443,13 +1567,25 @@ def _finalize_tiktok_creator_video_outputs(
     package_root = _ensure_unique_local_dir(runtime_dir / package_base)
 
     successful_rows = []
+    downloaded_total = 0
+    missing_rows = []
     for row in data_rows or []:
         if not isinstance(row, dict):
             continue
+        if str(row.get("下载结果") or "").strip() == "已下载":
+            downloaded_total += 1
         local_path = Path(str(row.get("本地文件") or "")).expanduser()
-        if str(row.get("下载结果") or "").strip() != "已下载" or not local_path.is_file():
+        if str(row.get("下载结果") or "").strip() != "已下载":
+            continue
+        if not local_path.is_file():
+            missing_rows.append(row)
             continue
         successful_rows.append((row, local_path))
+
+    if downloaded_total:
+        log(f"TikTok creator video package includes {len(successful_rows)}/{downloaded_total} downloaded files")
+    if missing_rows:
+        log(f"[warn] TikTok creator video package skipped {len(missing_rows)} rows because local files were missing")
 
     zip_path = None
     if successful_rows:
@@ -2250,6 +2386,8 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
             data = await runner.run_script_file(script_path, params=run_params, control_hook=wait_for_control)
         raw_count = len(data)
         data = _apply_final_export_guards(adapter_id, task_id, data)
+        if adapter_id == 'tiktok-ops-assistant' and task_id == 'creator_video_download':
+            data = _verify_tiktok_creator_video_download_rows(data, log=log)
         deduped_count = len(data)
         log(f"Script complete. Records: {raw_count}")
         if deduped_count != raw_count:
@@ -2267,6 +2405,8 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
         data = list(e.partial_data or data or [])
         raw_count = len(data)
         data = _apply_final_export_guards(adapter_id, task_id, data)
+        if adapter_id == 'tiktok-ops-assistant' and task_id == 'creator_video_download':
+            data = _verify_tiktok_creator_video_download_rows(data, log=log)
         deduped_count = len(data)
         if deduped_count != raw_count:
             log(f"Final export guard removed {raw_count - deduped_count} duplicate rows before partial export")
@@ -2297,6 +2437,8 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
             run_control['pause_logged'] = False
         raw_count = len(data)
         data = _apply_final_export_guards(adapter_id, task_id, data)
+        if adapter_id == 'tiktok-ops-assistant' and task_id == 'creator_video_download':
+            data = _verify_tiktok_creator_video_download_rows(data, log=log)
         deduped_count = len(data)
         if deduped_count != raw_count:
             log(f"Final export guard removed {raw_count - deduped_count} duplicate rows before partial export")
@@ -2328,48 +2470,63 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    instance_lock = _acquire_backend_instance_lock()
     # Init DB
     data_sink.init_db()
-    orphaned_active_runs = data_sink.list_active_runs(ACTIVE_LIVE_STATUSES)
-    orphaned_runs = data_sink.stop_orphaned_active_runs()
-    if orphaned_active_runs:
-        _cleanup_orphaned_runtime_artifacts(orphaned_active_runs)
-    if orphaned_runs:
-        logger.warning("Marked %s orphaned active task run(s) as stopped after backend startup", orphaned_runs)
+    owns_backend_instance = bool(instance_lock.acquired and _is_backend_port_available())
+    if not owns_backend_instance:
+        if not instance_lock.acquired:
+            logger.warning("Another crawshrimp backend instance is already active; skip startup side effects in this process")
+        else:
+            logger.warning("Backend port is already in use; skip startup side effects in this process")
+
+    if owns_backend_instance:
+        orphaned_active_runs = data_sink.list_active_runs(ACTIVE_LIVE_STATUSES)
+        orphaned_runs = data_sink.stop_orphaned_active_runs()
+        if orphaned_active_runs:
+            _cleanup_orphaned_runtime_artifacts(orphaned_active_runs)
+        if orphaned_runs:
+            logger.warning("Marked %s orphaned active task run(s) as stopped after backend startup", orphaned_runs)
 
     # Install built-in adapters
-    built_in = Path(__file__).parent.parent / "adapters"
-    if built_in.exists():
-        for d in built_in.iterdir():
-            if d.is_dir() and (d / "manifest.yaml").exists():
-                try:
-                    adapter_loader.install_from_dir(str(d), install_mode="copy", preserve_existing_link=True)
-                except Exception as e:
-                    logger.warning(f"Built-in adapter failed {d.name}: {e}")
+    if owns_backend_instance:
+        built_in = Path(__file__).parent.parent / "adapters"
+        if built_in.exists():
+            for d in built_in.iterdir():
+                if d.is_dir() and (d / "manifest.yaml").exists():
+                    try:
+                        adapter_loader.install_from_dir(str(d), install_mode="copy", preserve_existing_link=True)
+                    except Exception as e:
+                        logger.warning(f"Built-in adapter failed {d.name}: {e}")
 
-    adapter_loader.scan_all()
-    try:
-        ensure_knowledge_index()
-    except Exception:
-        logger.exception("knowledge index initialization failed; continuing without prebuilt index")
+        adapter_loader.scan_all()
+        try:
+            ensure_knowledge_index()
+        except Exception:
+            logger.exception("knowledge index initialization failed; continuing without prebuilt index")
 
     # Register scheduled tasks
-    try:
-        for item in adapter_loader.list_all():
-            if item['enabled']:
-                m = adapter_loader.get_adapter(item['id'])
-                if m:
-                    sched_module.register_adapter(m, _execute_task)
+    if owns_backend_instance:
+        try:
+            for item in adapter_loader.list_all():
+                if item['enabled']:
+                    m = adapter_loader.get_adapter(item['id'])
+                    if m:
+                        sched_module.register_adapter(m, _execute_task)
 
-        sched_module.start()
-    except Exception:
-        logger.exception("scheduler startup failed; continuing without scheduled jobs")
+            sched_module.start()
+        except Exception:
+            logger.exception("scheduler startup failed; continuing without scheduled jobs")
     logger.info("crawshrimp core started")
-    yield
     try:
-        sched_module.shutdown()
-    except Exception:
-        logger.exception("scheduler shutdown failed")
+        yield
+    finally:
+        try:
+            if owns_backend_instance:
+                sched_module.shutdown()
+        except Exception:
+            logger.exception("scheduler shutdown failed")
+        instance_lock.close()
 
 
 app = FastAPI(title="crawshrimp", version="1.4.10", lifespan=lifespan)

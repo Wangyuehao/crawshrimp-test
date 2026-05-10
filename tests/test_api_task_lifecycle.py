@@ -8,6 +8,52 @@ from core import api_server
 
 
 class ApiTaskLifecycleTests(unittest.IsolatedAsyncioTestCase):
+    async def test_lifespan_skips_orphan_cleanup_when_backend_port_is_unavailable(self):
+        calls = []
+
+        class FakeLock:
+            acquired = True
+
+            def close(self):
+                calls.append("lock.close")
+
+        with patch("core.api_server.data_sink.init_db", side_effect=lambda: calls.append("init_db")):
+            with patch("core.api_server._acquire_backend_instance_lock", return_value=FakeLock(), create=True):
+                with patch("core.api_server._is_backend_port_available", return_value=False, create=True):
+                    with patch("core.api_server.data_sink.list_active_runs", side_effect=AssertionError("should not list active runs")):
+                        with patch("core.api_server.data_sink.stop_orphaned_active_runs", side_effect=AssertionError("should not stop runs")):
+                            with patch("core.api_server.adapter_loader.scan_all", side_effect=AssertionError("should not scan adapters")):
+                                with patch("core.api_server.sched_module.start", side_effect=AssertionError("should not start scheduler")):
+                                    async with api_server.lifespan(api_server.app):
+                                        calls.append("yielded")
+
+        self.assertIn("init_db", calls)
+        self.assertIn("yielded", calls)
+        self.assertIn("lock.close", calls)
+
+    async def test_lifespan_skips_orphan_cleanup_when_instance_lock_is_unavailable(self):
+        calls = []
+
+        class FakeLock:
+            acquired = False
+
+            def close(self):
+                calls.append("lock.close")
+
+        with patch("core.api_server.data_sink.init_db", side_effect=lambda: calls.append("init_db")):
+            with patch("core.api_server._acquire_backend_instance_lock", return_value=FakeLock(), create=True):
+                with patch("core.api_server._is_backend_port_available", return_value=True, create=True):
+                    with patch("core.api_server.data_sink.list_active_runs", side_effect=AssertionError("should not list active runs")):
+                        with patch("core.api_server.data_sink.stop_orphaned_active_runs", side_effect=AssertionError("should not stop runs")):
+                            with patch("core.api_server.adapter_loader.scan_all", side_effect=AssertionError("should not scan adapters")):
+                                with patch("core.api_server.sched_module.start", side_effect=AssertionError("should not start scheduler")):
+                                    async with api_server.lifespan(api_server.app):
+                                        calls.append("yielded")
+
+        self.assertIn("init_db", calls)
+        self.assertIn("yielded", calls)
+        self.assertIn("lock.close", calls)
+
     async def test_list_tasks_includes_adapter_version(self):
         class FakeTask:
             id = "voucher_batch_create"

@@ -17,19 +17,21 @@ class FakeStorage {
 }
 
 class FakeElement {
-  constructor(text = '') {
+  constructor(text = '', attrs = {}) {
     this.innerText = text
     this.textContent = text
+    Object.assign(this, attrs)
   }
 }
 
 class FakeDocument {
-  constructor(bodyText = '', cookie = '') {
+  constructor(bodyText = '', cookie = '', selectors = {}) {
     this.body = new FakeElement(bodyText)
     this.cookie = cookie
+    this.selectors = selectors
   }
 
-  querySelectorAll() { return [] }
+  querySelectorAll(selector) { return this.selectors[selector] || [] }
   querySelector() { return null }
 }
 
@@ -73,6 +75,7 @@ async function runScript(scriptName, {
   Date: DateCtor = Date,
   bodyText = '',
   cookie = 'oec_seller_id_unified_seller_env=7496042382582647544; global_seller_id_unified_seller_env=7496042382582647544',
+  document: documentImpl,
 } = {}) {
   const scriptPath = path.resolve('adapters/tiktok-ops-assistant', scriptName)
   const source = fs.readFileSync(scriptPath, 'utf8')
@@ -97,7 +100,7 @@ async function runScript(scriptName, {
   Object.assign(win, windowProps)
   const context = {
     window: win,
-    document: new FakeDocument(bodyText, cookie),
+    document: documentImpl || new FakeDocument(bodyText, cookie),
     location: locationUrl,
     localStorage: storage,
     sessionStorage: win.sessionStorage,
@@ -891,7 +894,106 @@ test('creator video task applies product id filter to request and result rows', 
   assert.equal(result.meta.shared.pendingRows[0].视频ID, '7619062455813131550')
 })
 
-test('creator video default date range follows page T-2 latest selectable date', async () => {
+test('creator video task sends publish date filter and trusts API result rows', async () => {
+  const calls = []
+  const fetchImpl = async (url, init = {}) => {
+    const body = JSON.parse(String(init.body || '{}'))
+    calls.push(body)
+    assert.deepEqual(body.params.video_list_params[0].filter.video_post_date, {
+      start_time: 1777968000,
+      end_time: 1778227200,
+      timezone_offset: -28800,
+    })
+    return createJsonResponse({
+      code: 0,
+      message: 'success',
+      data: {
+        video_list_segments: [
+          {
+            total: 2,
+            time_descriptor: body.params.video_list_params[0].time_descriptor,
+            video_performances: [
+              {
+                video_info: {
+                  item_id: 'in-range-video',
+                  title: '#ad in range',
+                  create_time: '1778057820000',
+                  cover: { thumb_url_list: ['https://cover.example/in-range.jpg'] },
+                  play_info: {
+                    id: 'play-in-range',
+                    play_urls: ['https://v16m-default.tiktokcdn-us.com/in-range.mp4?mime_type=video_mp4'],
+                    duration: 1000,
+                    width: 1080,
+                    height: 1920,
+                  },
+                },
+                creator_base: {
+                  oec_id: 'creator-in-range',
+                  handle_name: 'creatorinrange',
+                },
+                product_base: {
+                  id: 'product-in-range',
+                  title: 'Product in range',
+                },
+                video_metrics: {
+                  video_gmv: { amount_formatted: '$10.00', amount: '10' },
+                },
+              },
+              {
+                video_info: {
+                  item_id: 'out-of-range-video',
+                  title: '#ad out of range',
+                  create_time: '1777885020000',
+                  cover: { thumb_url_list: ['https://cover.example/out-of-range.jpg'] },
+                  play_info: {
+                    id: 'play-out-of-range',
+                    play_urls: ['https://v16m-default.tiktokcdn-us.com/out-of-range.mp4?mime_type=video_mp4'],
+                    duration: 1000,
+                    width: 1080,
+                    height: 1920,
+                  },
+                },
+                creator_base: {
+                  oec_id: 'creator-out-of-range',
+                  handle_name: 'creatoroutofrange',
+                },
+                product_base: {
+                  id: 'product-out-of-range',
+                  title: 'Product out of range',
+                },
+                video_metrics: {
+                  video_gmv: { amount_formatted: '$5.00', amount: '5' },
+                },
+              },
+            ],
+          },
+        ],
+      },
+    })
+  }
+
+  const result = await runScript('creator-video-download.js', {
+    href: 'https://affiliate.tiktokshopglobalselling.com/insights/transaction-analysis?shop_region=US&shop_id=7496042382582647544',
+    params: {
+      shop_regions: ['US'],
+      publish_date_range: { start: '2026-05-05', end: '2026-05-07' },
+      page_size: 20,
+      max_pages_per_region: 1,
+    },
+    fetchImpl,
+  })
+
+  assert.equal(result.success, true)
+  assert.equal(result.meta.action, 'download_urls')
+  assert.equal(calls.length, 1)
+  assert.equal(result.meta.shared.pendingRows.length, 2)
+  assert.equal(result.meta.shared.pendingRows[0].视频ID, 'in-range-video')
+  assert.equal(result.meta.shared.pendingRows[1].视频ID, 'out-of-range-video')
+  assert.equal(result.meta.items.length, 2)
+  assert.equal(result.meta.items[0].filename, 'US_creatorinrange_in-range-video_product-in-range_2026-05-06_00-57-00.mp4')
+})
+
+test('creator video default date range follows current page statistic date picker', async () => {
   const calls = []
   const fetchImpl = async (url, init = {}) => {
     const body = JSON.parse(String(init.body || '{}'))
@@ -917,14 +1019,27 @@ test('creator video default date range follows page T-2 latest selectable date',
       fetchImpl,
       params: { shop_regions: ['US'], max_pages_per_region: 1 },
       Date: fixedDateClass(nowIso),
+      document: new FakeDocument('', '', {
+        '.m4b-date-picker-range': [
+          {
+            querySelectorAll(selector) {
+              if (selector !== 'input') return []
+              return [
+                { value: '2026/4/24' },
+                { value: '2026/4/30' },
+              ]
+            },
+          },
+        ],
+      }),
     })
     assert.equal(result.success, true)
   }
 
   const descriptor = calls[0].params.video_list_params[0].time_descriptor
   assert.equal(descriptor.timezone_offset, -28800)
-  assert.equal(descriptor.end_time, 1778054400)
-  assert.equal(descriptor.start_time, 1777449600)
+  assert.equal(descriptor.start_time, 1777017600)
+  assert.equal(descriptor.end_time, 1777622400)
   assert.deepEqual(calls[1].params.video_list_params[0].time_descriptor, descriptor)
 })
 
@@ -951,7 +1066,7 @@ test('creator video quick time range supports last 28 days and previous week in 
   const common = {
     href: 'https://affiliate.tiktokshopglobalselling.com/insights/transaction-analysis?shop_region=US&shop_id=7496042382582647544',
     fetchImpl,
-    Date: fixedDateClass('2026-05-07T10:00:00.000Z'),
+    Date: fixedDateClass('2026-05-08T10:00:00.000Z'),
   }
 
   await runScript('creator-video-download.js', {
@@ -1016,11 +1131,11 @@ test('creator video reuses shared time descriptor during multi-page probe', asyn
   assert.deepEqual(calls[0], sharedDescriptor)
 })
 
-test('creator video custom time range rejects ranges outside the page T-2 and 90-day limits', async () => {
+test('creator video custom time range rejects ranges outside the page latest selectable and 90-day limits', async () => {
   const result = await runScript('creator-video-download.js', {
     href: 'https://affiliate.tiktokshopglobalselling.com/insights/transaction-analysis?shop_region=US&shop_id=7496042382582647544',
     fetchImpl: async () => { throw new Error('should reject before fetch') },
-    Date: fixedDateClass('2026-05-07T10:00:00.000Z'),
+    Date: fixedDateClass('2026-05-08T10:00:00.000Z'),
     params: {
       shop_regions: ['US'],
       max_pages_per_region: 1,
