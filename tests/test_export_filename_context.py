@@ -70,6 +70,19 @@ class ExportFilenameContextTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(quality_ctx["region_scope"], "全球+欧区")
         self.assertEqual(quality_ctx["quality_tab_scope"], "品质分析+品质优化")
 
+    async def test_tiktok_product_management_context_uses_chinese_status_scope(self):
+        ctx = await self._build_ctx(
+            "product_management_export",
+            {
+                "shop_regions": ["US", "GB"],
+                "product_statuses": ["active", "reviewing", "violation", "deactivate"],
+            },
+            adapter_id="tiktok-ops-assistant",
+        )
+
+        self.assertEqual(ctx["region_scope"], "US+GB")
+        self.assertEqual(ctx["status_scope"], "在售+审核中+需要关注+已下架")
+
     async def test_goods_traffic_list_context_prefers_shared_shop_name_over_broad_page_guess(self):
         ctx = await self._build_ctx(
             "goods_traffic_list",

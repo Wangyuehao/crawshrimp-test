@@ -1,8 +1,8 @@
 id: tiktok-ops-assistant
 name: Tiktok 运营助手
-version: 0.1.0
+version: 0.2.0
 author: codex
-description: "TikTok Shop 多区域运营数据抓取：商品评分、联盟达人视频列表与视频下载"
+description: "TikTok Shop 多区域运营数据抓取：商品管理、商品评分、联盟达人视频列表与视频下载"
 entry_url: https://seller.us.tiktokshopglobalselling.com/product/rating
 tab_match_prefixes:
   - https://seller.us.tiktokshopglobalselling.com/
@@ -15,6 +15,199 @@ auth:
   login_url: https://seller.us.tiktokshopglobalselling.com/
 
 tasks:
+  - id: product_management_export
+    name: 商品管理导出
+    description: 导出 TikTok Shop Seller Center 商品管理列表字段，按商品状态 Tab 抓取，去除操作列，并将商品、SKU、价格、库存、表现和其他店铺信息拆列展示
+    script: product-management.js
+    entry_url: https://seller.us.tiktokshopglobalselling.com/product/manage?shop_region=US
+    skip_auth: false
+    params:
+      - id: mode
+        type: radio
+        label: 打开方式
+        default: current
+        options:
+          - value: current
+            label: 使用当前登录页
+          - value: new
+            label: 新开商品管理页
+      - id: shop_regions
+        type: checkbox
+        label: 店铺区域
+        default: []
+        ui_variant: dropdown_multi
+        placeholder: 默认当前区域；可多选
+        hint: 不选择时使用当前页面或账号默认区域；选择“全部已开通区域”时会按账号已开通店铺区域抓取。
+        options:
+          - value: all
+            label: 全部已开通区域
+          - value: US
+            label: United States
+          - value: GB
+            label: United Kingdom
+          - value: FR
+            label: France
+          - value: DE
+            label: Germany
+          - value: IT
+            label: Italy
+          - value: ES
+            label: Spain
+      - id: product_statuses
+        type: checkbox
+        label: 商品状态
+        default:
+          - active
+          - reviewing
+          - violation
+          - deactivate
+        ui_variant: dropdown_multi
+        placeholder: 默认抓取在售、审核中、需要关注、已下架
+        hint: 脚本会按所选状态逐个切换商品管理 Tab 抓取；“全部”会调用全部商品 Tab。
+        options:
+          - value: all
+            label: 全部
+          - value: active
+            label: 在售
+          - value: reviewing
+            label: 审核中
+          - value: violation
+            label: 需要关注
+          - value: deactivate
+            label: 已下架
+          - value: draft
+            label: 草稿
+          - value: deleted
+            label: 已删除
+          - value: sold-out
+            label: 售罄
+          - value: listing-failed
+            label: 审核失败
+          - value: suspended
+            label: 平台下架
+          - value: frozen
+            label: 已冻结
+          - value: traffic-deboost
+            label: 流量管控
+      - id: search_content
+        type: text
+        label: 商品名称/ID/SKU
+        placeholder: "可按商品标题、商品 ID 或 SKU 筛选"
+        hint: 可选。对应商品管理页搜索框；留空时沿用页面 URL 上已有筛选。
+        ui_span: third
+      - id: category_id
+        type: text
+        label: 类目ID
+        placeholder: "可选"
+        hint: 可选。用于接口类目筛选；复杂筛选也会尽量沿用当前页面 URL 参数。
+        ui_span: third
+      - id: stock_filter
+        type: select
+        label: 库存筛选
+        default: ""
+        ui_span: third
+        options:
+          - value: ""
+            label: 不限制
+          - value: low
+            label: 低库存
+          - value: out
+            label: 售罄
+      - id: lower_price
+        type: number
+        label: 最低价
+        min: 0
+        step: 0.01
+        ui_span: third
+      - id: upper_price
+        type: number
+        label: 最高价
+        min: 0
+        step: 0.01
+        ui_span: third
+      - id: page_size
+        type: select
+        label: 每页数量
+        default: "50"
+        ui_span: third
+        options:
+          - value: "20"
+            label: 20 条/页
+          - value: "50"
+            label: 50 条/页（推荐）
+          - value: "100"
+            label: 100 条/页
+      - id: max_pages_per_status
+        type: number
+        label: 每状态最多页数
+        default: 200
+        min: 1
+        max: 1000
+        step: 1
+        ui_span: third
+        hint: 防止异常循环；会按接口 total 自动提前停止。
+    trigger:
+      type: manual
+    output:
+      - type: excel
+        filename: "TikTok商品管理_{region_scope}_{status_scope}_{timestamp}.xlsx"
+        sheet_key: __sheet_name
+        columns:
+          - 区域
+          - 店铺ID
+          - 店铺名称
+          - 状态Tab
+          - 状态TabID
+          - 页码
+          - 序号
+          - 商品ID
+          - 商品标题
+          - 商品图片
+          - 主状态
+          - 展示状态
+          - 是否在线版本
+          - 审核状态
+          - 商品状态码
+          - 总SKU数
+          - 接口返回SKU数
+          - SKU_ID列表
+          - 商家SKU列表
+          - 全球SKU_ID列表
+          - SKU规格
+          - 库存总数
+          - 可售库存
+          - SKU库存明细
+          - 价格区间
+          - 销售价
+          - 标价
+          - 促销价
+          - 近28天浏览次数
+          - 近28天订单数
+          - 近28天GMV
+          - 近7天GMV环比
+          - 其他店铺数量
+          - 其他店铺
+          - 类目
+          - 品牌
+          - 促销活动
+          - 有效促销
+          - 违规记录ID
+          - 暂停/冻结原因
+          - 发品质量等级
+          - 发品质量问题数
+          - 低库存
+          - 售罄
+          - 创建时间
+          - 更新时间
+          - 删除时间
+          - 冻结时间
+          - 包裹重量
+          - 包裹尺寸
+          - 是否多仓
+          - 是否订阅
+          - 是否英雄商品
+          - 筛选摘要
+
   - id: product_rating
     name: 商品评分抓取
     description: 抓取 TikTok Shop Seller Center 商品评分列表，支持多区域和星级筛选，并导出评价原文、商品、订单、用户、回复和图片字段

@@ -1220,6 +1220,249 @@ test('creator video custom time range rejects ranges outside the page latest sel
   assert.match(result.error, /最晚只能选择到 2026-05-06/)
 })
 
+test('product management exports selected status tabs and splits packed product fields', async () => {
+  const calls = []
+  const makeProduct = (id, name, overrides = {}) => ({
+    product_id: id,
+    product_name: name,
+    image: { url_list: [`https://img.example/${id}.jpg`] },
+    product_status_view: {
+      product_main_status: overrides.mainStatus ?? 1,
+      product_display_status: overrides.displayStatus ?? 1,
+    },
+    audit_status: overrides.auditStatus ?? 2,
+    total_sku_count: 2,
+    skus: [
+      {
+        id: `${id}-SKU-1`,
+        seller_sku: `${id}-RED`,
+        global_sku_id: `${id}-G-1`,
+        base_price: {
+          sale_price: '$10.00',
+          list_price: '$14.00',
+          promotion_price: '$9.00',
+        },
+        quantities: [
+          { type: 'available', quantity: 7, warehouse_name: 'US main' },
+          { type: 'total', quantity: 9, warehouse_name: 'US main' },
+        ],
+        properties: [
+          { name: 'Color', value_name: 'Red' },
+          { name: 'Size', value_name: '6' },
+        ],
+      },
+      {
+        id: `${id}-SKU-2`,
+        seller_sku: `${id}-BLUE`,
+        global_sku_id: `${id}-G-2`,
+        base_price: { sale_price: '$12.00', list_price: '$16.00' },
+        quantities: [
+          { type: 'available', quantity: 11, warehouse_name: 'US main' },
+          { type: 'total', quantity: 13, warehouse_name: 'US main' },
+        ],
+        properties: [
+          { name: 'Color', value_name: 'Blue' },
+          { name: 'Size', value_name: '7' },
+        ],
+      },
+    ],
+    quantity: { total_available_stock: 18 },
+    total_available_stock: 18,
+    price_range: { min_price_format: '$10.00', max_price_format: '$12.00' },
+    sale_price_ranges: [{ min_price_format: '$10.00', max_price_format: '$12.00' }],
+    product_performance: {
+      last_28days_pv: '1234',
+      last_28days_order: '56',
+      last_28days_gmv: '$789.00',
+      last_7days_gmv_sequential_value: 0.148,
+    },
+    categories: [{ local_display_name: 'Shoes' }, { local_display_name: 'Sneakers' }],
+    brand: { name: 'Balabala' },
+    same_product_count: 3,
+    same_product_info_list: [
+      { product_id: `${id}-GB`, shop_region: 'GB', product_name: `${name} UK` },
+    ],
+    product_tier_info: { tier_name: 'Good', issue_count: 2 },
+    product_low_stock: { is_low_stock: true },
+    edit_time: '1778094950',
+    action_list: [{ name: 'edit' }],
+    actions: [{ name: 'delete' }],
+    ...overrides,
+  })
+  const fixtures = {
+    '2:1': { total: 2, products: [makeProduct('P-100', 'Kids Sneaker Red')] },
+    '2:2': { total: 2, products: [makeProduct('P-101', 'Kids Sneaker Blue')] },
+    '19:1': {
+      total: 1,
+      products: [makeProduct('P-900', 'Needs Attention Sneaker', {
+        mainStatus: 3,
+        displayStatus: 7,
+        violation_records_id: 'V-1',
+        suspend_reason: { title: 'Image issue' },
+      })],
+    },
+  }
+  const fetchImpl = async (url, init = {}) => {
+    const parsed = new URL(String(url))
+    calls.push({
+      url: parsed,
+      credentials: init.credentials,
+      headers: init.headers,
+    })
+    const key = `${parsed.searchParams.get('tab_id')}:${parsed.searchParams.get('page_number')}`
+    const fixture = fixtures[key] || { total: 0, products: [] }
+    return createJsonResponse({
+      code: 0,
+      message: 'success',
+      data: {
+        total_product_count: fixture.total,
+        products: fixture.products,
+      },
+    }, 200, String(url))
+  }
+
+  let result = await runScript('product-management.js', {
+    href: 'https://seller.us.tiktokshopglobalselling.com/product/manage?shop_region=US&shop_id=7496042382582647544',
+    params: {
+      shop_regions: ['US'],
+      product_statuses: ['active', 'violation'],
+      search_content: 'sneaker',
+      page_size: 1,
+      sku_number: 50,
+      max_pages_per_status: 5,
+      page_delay_ms: 1,
+    },
+    fetchImpl,
+  })
+
+  assert.equal(result.success, true)
+  assert.equal(result.meta.action, 'next_phase')
+  assert.equal(result.data.length, 1)
+  assert.equal(result.data[0].状态Tab, '在售')
+  assert.equal(result.data[0].状态TabID, 2)
+  assert.equal(result.data[0].商品ID, 'P-100')
+  assert.equal(result.data[0].商品标题, 'Kids Sneaker Red')
+  assert.equal(result.data[0].商家SKU列表, 'P-100-RED\nP-100-BLUE')
+  assert.equal(result.data[0].SKU规格, 'Color=Red; Size=6\nColor=Blue; Size=7')
+  assert.equal(result.data[0].销售价, '$10.00\n$12.00')
+  assert.equal(result.data[0].价格区间, '$10.00 - $12.00')
+  assert.equal(result.data[0].库存总数, 18)
+  assert.equal(result.data[0].近7天GMV环比, '14.80%')
+  assert.equal(result.data[0].类目, 'Shoes / Sneakers')
+  assert.equal(result.data[0].其他店铺数量, 3)
+  assert.equal(result.data[0].其他店铺, 'GB:P-100-GB:Kids Sneaker Red UK')
+  assert.equal(result.data[0].低库存, '是')
+  assert.equal(Object.prototype.hasOwnProperty.call(result.data[0], '操作'), false)
+  assert.equal(calls[0].url.pathname, '/api/v1/product/local/products/list')
+  assert.equal(calls[0].url.searchParams.get('tab_id'), '2')
+  assert.equal(calls[0].url.searchParams.get('page_number'), '1')
+  assert.equal(calls[0].url.searchParams.get('page_size'), '1')
+  assert.equal(calls[0].url.searchParams.get('sku_number'), '50')
+  assert.equal(calls[0].url.searchParams.get('search_content'), 'sneaker')
+  assert.equal(calls[0].credentials, 'include')
+  assert.equal(calls[0].headers['X-Tt-Oec-Region'], 'US')
+
+  result = await runScript('product-management.js', {
+    href: 'https://seller.us.tiktokshopglobalselling.com/product/manage?shop_region=US&shop_id=7496042382582647544',
+    params: {
+      shop_regions: ['US'],
+      product_statuses: ['active', 'violation'],
+      search_content: 'sneaker',
+      page_size: 1,
+      sku_number: 50,
+      max_pages_per_status: 5,
+      page_delay_ms: 1,
+    },
+    shared: result.meta.shared,
+    fetchImpl,
+  })
+
+  assert.equal(result.success, true)
+  assert.equal(result.data[0].商品ID, 'P-101')
+  assert.equal(calls[1].url.searchParams.get('tab_id'), '2')
+  assert.equal(calls[1].url.searchParams.get('page_number'), '2')
+
+  result = await runScript('product-management.js', {
+    href: 'https://seller.us.tiktokshopglobalselling.com/product/manage?shop_region=US&shop_id=7496042382582647544',
+    params: {
+      shop_regions: ['US'],
+      product_statuses: ['active', 'violation'],
+      search_content: 'sneaker',
+      page_size: 1,
+      sku_number: 50,
+      max_pages_per_status: 5,
+      page_delay_ms: 1,
+    },
+    shared: result.meta.shared,
+    fetchImpl,
+  })
+
+  assert.equal(result.success, true)
+  assert.equal(result.meta.action, 'complete')
+  assert.equal(result.meta.has_more, false)
+  assert.equal(result.data[0].状态Tab, '需要关注')
+  assert.equal(result.data[0].主状态, '已暂停')
+  assert.equal(result.data[0].展示状态, '已冻结')
+  assert.equal(result.data[0].违规记录ID, 'V-1')
+  assert.equal(result.data[0]['暂停/冻结原因'], 'Image issue')
+  assert.equal(calls[2].url.searchParams.get('tab_id'), '19')
+  assert.equal(calls[2].url.searchParams.get('page_number'), '1')
+})
+
+test('product management treats listing failed display status separately from sold-out', async () => {
+  const fetchImpl = async (url) => createJsonResponse({
+    code: 0,
+    message: 'success',
+    data: {
+      total_product_count: 1,
+      products: [
+        {
+          product_id: 'P-failed',
+          product_name: 'Listing Failed Sneaker',
+          product_status_view: {
+            product_main_status: 3,
+            product_display_status: 8,
+          },
+          total_available_stock: 12,
+          skus: [],
+        },
+      ],
+    },
+  }, 200, String(url))
+
+  const result = await runScript('product-management.js', {
+    href: 'https://seller.us.tiktokshopglobalselling.com/product/manage?shop_region=US&shop_id=7496042382582647544',
+    params: {
+      shop_regions: ['US'],
+      product_statuses: ['listing-failed'],
+      page_size: 20,
+      max_pages_per_status: 1,
+    },
+    fetchImpl,
+  })
+
+  assert.equal(result.success, true)
+  assert.equal(result.meta.action, 'complete')
+  assert.equal(result.data[0].状态Tab, '审核失败')
+  assert.equal(result.data[0].展示状态, '审核失败')
+  assert.equal(result.data[0].售罄, '否')
+})
+
+test('product management navigates to seller manage page before collecting when started elsewhere', async () => {
+  const result = await runScript('product-management.js', {
+    href: 'https://affiliate.tiktokshopglobalselling.com/insights/transaction-analysis?shop_region=US&shop_id=7496042382582647544',
+    params: { shop_regions: ['GB'] },
+    fetchImpl: async () => { throw new Error('should navigate before fetch') },
+  })
+
+  assert.equal(result.success, true)
+  assert.equal(result.meta.action, 'next_phase')
+  assert.equal(result.meta.next_phase, 'main')
+  assert.match(result.meta.shared.target_url, /^https:\/\/seller\.eu\.tiktokshopglobalselling\.com\/product\/manage/)
+  assert.match(result.meta.shared.target_url, /shop_region=GB/)
+  assert.match(result.meta.shared.target_url, /shop_id=7496042382582647544/)
+})
+
 test('product rating navigates to seller rating page before collecting when started elsewhere', async () => {
   const result = await runScript('product-rating.js', {
     href: 'https://affiliate.tiktokshopglobalselling.com/insights/transaction-analysis?shop_region=US&shop_id=7496042382582647544',
