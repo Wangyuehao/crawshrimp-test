@@ -428,14 +428,33 @@
 
   function buildPlannedFilename(region, creatorAccount, videoId, productId, timePart, soldCountPart) {
     const parts = [
+      safeFilename(soldCountPart || '0件'),
       safeFilename(region || DEFAULT_REGION),
       safeFilename(creatorAccount || 'unknown_creator'),
       safeFilename(videoId || 'unknown_video'),
       safeFilename(productId || 'unknown_product'),
       safeFilename(timePart || 'unknown_time'),
-      safeFilename(soldCountPart || '0件'),
     ].filter(Boolean)
     return `${parts.join('_')}.mp4`
+  }
+
+  function parseSoldCount(value) {
+    const text = compact(value)
+    if (!text) return 0
+    const match = text.replace(/,/g, '').match(/-?\d+(?:\.\d+)?/)
+    if (!match) return 0
+    const numeric = Number(match[0])
+    return Number.isFinite(numeric) ? numeric : 0
+  }
+
+  function sortNormalizedBySoldCount(items) {
+    return items
+      .map((item, index) => ({ item, index }))
+      .sort((left, right) => {
+        const diff = parseSoldCount(right.item?.row?.视频归因成交件数) - parseSoldCount(left.item?.row?.视频归因成交件数)
+        return diff || left.index - right.index
+      })
+      .map(entry => entry.item)
   }
 
   function normalizeVideo(item, context, pageNo, index) {
@@ -688,8 +707,9 @@
     const filteredNormalized = productIdFilter
       ? normalized.filter(item => compact(item?.row?.商品ID) === productIdFilter)
       : normalized
-    const rows = filteredNormalized.map(item => item.row)
-    const downloads = filteredNormalized.map(item => item.download).filter(Boolean)
+    const sortedPageItems = sortNormalizedBySoldCount(filteredNormalized)
+    const rows = sortedPageItems.map(item => item.row)
+    const downloads = sortedPageItems.map(item => item.download).filter(Boolean)
     const cursor = nextCursorState({
       regionIndex,
       pageNo,
@@ -702,8 +722,15 @@
       regionIndex === 0 ? total : Number(shared.total_rows || 0),
       (Array.isArray(shared.pendingRows) ? shared.pendingRows.length : 0) + rows.length,
     )
-    const accumulatedRows = [...(Array.isArray(shared.pendingRows) ? shared.pendingRows : []), ...rows]
-    const accumulatedDownloads = [...(Array.isArray(shared.pendingDownloads) ? shared.pendingDownloads : []), ...downloads]
+    const accumulatedItems = sortNormalizedBySoldCount([
+      ...(Array.isArray(shared.pendingRows) ? shared.pendingRows : []).map((row, index) => ({
+        row,
+        download: Array.isArray(shared.pendingDownloads) ? shared.pendingDownloads[index] || null : null,
+      })),
+      ...sortedPageItems,
+    ])
+    const accumulatedRows = accumulatedItems.map(item => item.row)
+    const accumulatedDownloads = accumulatedItems.map(item => item.download).filter(Boolean)
     const searchCompletedCodes = Math.min(accumulatedRows.length, totalRows || accumulatedRows.length)
     const nextShared = {
       ...shared,

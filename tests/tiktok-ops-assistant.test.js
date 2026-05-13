@@ -679,12 +679,12 @@ test('creator video task plans browser downloads then emits rows with download r
   assert.equal(first.meta.items[0].headers.Referer, 'https://affiliate.tiktokshopglobalselling.com/')
   assert.match(first.meta.items[0].headers['User-Agent'], /Mozilla\/5\.0/)
   assert.equal(first.meta.items[0].url, 'https://v16m-default.tiktokcdn-us.com/video-a.mp4?mime_type=video_mp4')
-  assert.equal(first.meta.items[0].filename, 'US_heatherstansberryy_7619062455813131550_1730710259238277880_2026-03-19_12-13-44_55件.mp4')
+  assert.equal(first.meta.items[0].filename, '55件_US_heatherstansberryy_7619062455813131550_1730710259238277880_2026-03-19_12-13-44.mp4')
   assert.equal(first.meta.concurrency, 2)
   assert.equal(first.meta.shared.pendingRows[0].视频ID, '7619062455813131550')
   assert.equal(first.meta.shared.pendingRows[0].达人ID, '7494014102087828932')
   assert.equal(first.meta.shared.pendingRows[0].商品ID, '1730710259238277880')
-  assert.equal(first.meta.shared.pendingRows[0].计划文件名, 'US_heatherstansberryy_7619062455813131550_1730710259238277880_2026-03-19_12-13-44_55件.mp4')
+  assert.equal(first.meta.shared.pendingRows[0].计划文件名, '55件_US_heatherstansberryy_7619062455813131550_1730710259238277880_2026-03-19_12-13-44.mp4')
   assert.equal(first.meta.shared.search_total_codes, 2)
   assert.equal(first.meta.shared.search_completed_codes, 1)
   assert.equal(first.meta.shared.current_store, 'TikTok达人视频下载 / US')
@@ -704,8 +704,8 @@ test('creator video task plans browser downloads then emits rows with download r
         items: [
           {
             success: true,
-            filename: 'US_heatherstansberryy_7619062455813131550_1730710259238277880_2026-03-19_12-13-44_55件.mp4',
-            path: '/tmp/tiktok/US_heatherstansberryy_7619062455813131550_1730710259238277880_2026-03-19_12-13-44_55件.mp4',
+            filename: '55件_US_heatherstansberryy_7619062455813131550_1730710259238277880_2026-03-19_12-13-44.mp4',
+            path: '/tmp/tiktok/55件_US_heatherstansberryy_7619062455813131550_1730710259238277880_2026-03-19_12-13-44.mp4',
             bytes: 1234,
           },
         ],
@@ -719,8 +719,106 @@ test('creator video task plans browser downloads then emits rows with download r
   assert.equal(second.meta.has_more, false)
   assert.equal(second.data.length, 1)
   assert.equal(second.data[0].下载结果, '已下载')
-  assert.equal(second.data[0].本地文件, '/tmp/tiktok/US_heatherstansberryy_7619062455813131550_1730710259238277880_2026-03-19_12-13-44_55件.mp4')
+  assert.equal(second.data[0].本地文件, '/tmp/tiktok/55件_US_heatherstansberryy_7619062455813131550_1730710259238277880_2026-03-19_12-13-44.mp4')
   assert.equal(second.data[0].联盟视频归因GMV, '$1,517.56')
+})
+
+test('creator video download queue sorts by sold count descending', async () => {
+  const fetchImpl = async (url, init = {}) => {
+    const body = JSON.parse(String(init.body || '{}'))
+    return createJsonResponse({
+      code: 0,
+      message: 'success',
+      data: {
+        video_list_segments: [
+          {
+            total: 2,
+            time_descriptor: body.params.video_list_params[0].time_descriptor,
+            video_performances: [
+              {
+                video_info: {
+                  item_id: 'low-video',
+                  title: 'low sold count',
+                  create_time: '1773951224000',
+                  play_info: {
+                    id: 'play-low',
+                    play_urls: ['https://v16m-default.tiktokcdn-us.com/low.mp4?mime_type=video_mp4'],
+                  },
+                },
+                creator_base: { oec_id: 'creator-low', handle_name: 'lowcreator' },
+                product_base: { id: 'low-product', title: 'Low product' },
+                video_metrics: { video_items_sold_cnt: { value: '7' } },
+              },
+              {
+                video_info: {
+                  item_id: 'high-video',
+                  title: 'high sold count',
+                  create_time: '1773951224000',
+                  play_info: {
+                    id: 'play-high',
+                    play_urls: ['https://v16m-default.tiktokcdn-us.com/high.mp4?mime_type=video_mp4'],
+                  },
+                },
+                creator_base: { oec_id: 'creator-high', handle_name: 'highcreator' },
+                product_base: { id: 'high-product', title: 'High product' },
+                video_metrics: { video_items_sold_cnt: { value: '120' } },
+              },
+            ],
+          },
+        ],
+      },
+    })
+  }
+
+  const first = await runScript('creator-video-download.js', {
+    href: 'https://affiliate.tiktokshopglobalselling.com/insights/transaction-analysis?shop_region=US&shop_id=7496042382582647544',
+    params: { shop_regions: ['US'], page_size: 20, max_pages_per_region: 1 },
+    fetchImpl,
+  })
+
+  assert.equal(first.success, true)
+  assert.equal(first.meta.action, 'download_urls')
+  assert.deepEqual(Array.from(first.meta.shared.pendingRows, row => row.视频ID), ['high-video', 'low-video'])
+  assert.deepEqual(Array.from(first.meta.shared.pendingRows, row => row.视频归因成交件数), ['120', '7'])
+  assert.deepEqual(Array.from(first.meta.items, item => item.url), [
+    'https://v16m-default.tiktokcdn-us.com/high.mp4?mime_type=video_mp4',
+    'https://v16m-default.tiktokcdn-us.com/low.mp4?mime_type=video_mp4',
+  ])
+  assert.equal(first.meta.items[0].filename, '120件_US_highcreator_high-video_high-product_2026-03-19_12-13-44.mp4')
+  assert.equal(first.meta.items[1].filename, '7件_US_lowcreator_low-video_low-product_2026-03-19_12-13-44.mp4')
+
+  const second = await runScript('creator-video-download.js', {
+    phase: 'after_download',
+    href: 'https://affiliate.tiktokshopglobalselling.com/insights/transaction-analysis?shop_region=US&shop_id=7496042382582647544',
+    shared: {
+      ...first.meta.shared,
+      downloadResults: {
+        ok: true,
+        items: [
+          {
+            success: true,
+            filename: first.meta.items[0].filename,
+            path: `/tmp/tiktok/${first.meta.items[0].filename}`,
+            bytes: 120,
+          },
+          {
+            success: true,
+            filename: first.meta.items[1].filename,
+            path: `/tmp/tiktok/${first.meta.items[1].filename}`,
+            bytes: 7,
+          },
+        ],
+      },
+    },
+    fetchImpl,
+  })
+
+  assert.equal(second.success, true)
+  assert.deepEqual(Array.from(second.data, row => row.视频ID), ['high-video', 'low-video'])
+  assert.deepEqual(Array.from(second.data, row => row.本地文件), [
+    '/tmp/tiktok/120件_US_highcreator_high-video_high-product_2026-03-19_12-13-44.mp4',
+    '/tmp/tiktok/7件_US_lowcreator_low-video_low-product_2026-03-19_12-13-44.mp4',
+  ])
 })
 
 test('creator video task completes probe stage across multiple pages before starting downloads', async () => {
@@ -990,7 +1088,7 @@ test('creator video task sends publish date filter and trusts API result rows', 
   assert.equal(result.meta.shared.pendingRows[0].视频ID, 'in-range-video')
   assert.equal(result.meta.shared.pendingRows[1].视频ID, 'out-of-range-video')
   assert.equal(result.meta.items.length, 2)
-  assert.equal(result.meta.items[0].filename, 'US_creatorinrange_in-range-video_product-in-range_2026-05-06_00-57-00_0件.mp4')
+  assert.equal(result.meta.items[0].filename, '0件_US_creatorinrange_in-range-video_product-in-range_2026-05-06_00-57-00.mp4')
 })
 
 test('creator video publish date range accepts local T-2 through the full day', async () => {
