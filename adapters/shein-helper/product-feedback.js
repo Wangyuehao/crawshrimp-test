@@ -462,13 +462,22 @@
   function assignTextFilter(payload, candidates, fallback, values) {
     if (!Array.isArray(values) || !values.length) return false
     const key = pickPayloadKey(payload, candidates, fallback)
-    payload[key] = values.length === 1 ? values[0] : values
+    payload[key] = values[0]
     return true
+  }
+
+  function validateSingleTextFilter(values, label) {
+    if (!Array.isArray(values) || values.length <= 1) return ''
+    return `${label} 每次仅支持填写 1 个，请分次运行`
   }
 
   function applyRequestedFeedbackFilters(payload, requestedFilters) {
     const filterPayload = deepClone(payload, {})
     const filters = normalizeFeedbackFilterParams(requestedFilters)
+    const skcError = validateSingleTextFilter(filters.skc, '商品SKC')
+    if (skcError) return { error: skcError }
+    const commentIdError = validateSingleTextFilter(filters.commentId, '评价ID')
+    if (commentIdError) return { error: commentIdError }
     let changed = false
     changed = assignTextFilter(filterPayload, ['skc', 'goodsSkc', 'goodsSKC'], 'skc', filters.skc) || changed
     changed = assignTextFilter(filterPayload, ['commentId', 'comment_id', 'id'], 'commentId', filters.commentId) || changed
@@ -819,6 +828,7 @@
       reviewRangeResult.filterPayload,
       options.feedbackFilters,
     )
+    if (feedbackFilterResult.error) return { error: feedbackFilterResult.error }
     const filterPayload = feedbackFilterResult.filterPayload
     const filterSummary = feedbackFilterResult.filterSummary
     const fullPayload = {
