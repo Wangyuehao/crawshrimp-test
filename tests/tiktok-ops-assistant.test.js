@@ -679,12 +679,12 @@ test('creator video task plans browser downloads then emits rows with download r
   assert.equal(first.meta.items[0].headers.Referer, 'https://affiliate.tiktokshopglobalselling.com/')
   assert.match(first.meta.items[0].headers['User-Agent'], /Mozilla\/5\.0/)
   assert.equal(first.meta.items[0].url, 'https://v16m-default.tiktokcdn-us.com/video-a.mp4?mime_type=video_mp4')
-  assert.equal(first.meta.items[0].filename, 'US_heatherstansberryy_7619062455813131550_1730710259238277880_2026-03-19_12-13-44.mp4')
+  assert.equal(first.meta.items[0].filename, '55件_US_heatherstansberryy_7619062455813131550_1730710259238277880_2026-03-19_12-13-44.mp4')
   assert.equal(first.meta.concurrency, 2)
   assert.equal(first.meta.shared.pendingRows[0].视频ID, '7619062455813131550')
   assert.equal(first.meta.shared.pendingRows[0].达人ID, '7494014102087828932')
   assert.equal(first.meta.shared.pendingRows[0].商品ID, '1730710259238277880')
-  assert.equal(first.meta.shared.pendingRows[0].计划文件名, 'US_heatherstansberryy_7619062455813131550_1730710259238277880_2026-03-19_12-13-44.mp4')
+  assert.equal(first.meta.shared.pendingRows[0].计划文件名, '55件_US_heatherstansberryy_7619062455813131550_1730710259238277880_2026-03-19_12-13-44.mp4')
   assert.equal(first.meta.shared.search_total_codes, 2)
   assert.equal(first.meta.shared.search_completed_codes, 1)
   assert.equal(first.meta.shared.current_store, 'TikTok达人视频下载 / US')
@@ -704,8 +704,8 @@ test('creator video task plans browser downloads then emits rows with download r
         items: [
           {
             success: true,
-            filename: 'US_heatherstansberryy_7619062455813131550_1730710259238277880_2026-03-19_12-13-44.mp4',
-            path: '/tmp/tiktok/US_heatherstansberryy_7619062455813131550_1730710259238277880_2026-03-19_12-13-44.mp4',
+            filename: '55件_US_heatherstansberryy_7619062455813131550_1730710259238277880_2026-03-19_12-13-44.mp4',
+            path: '/tmp/tiktok/55件_US_heatherstansberryy_7619062455813131550_1730710259238277880_2026-03-19_12-13-44.mp4',
             bytes: 1234,
           },
         ],
@@ -719,8 +719,106 @@ test('creator video task plans browser downloads then emits rows with download r
   assert.equal(second.meta.has_more, false)
   assert.equal(second.data.length, 1)
   assert.equal(second.data[0].下载结果, '已下载')
-  assert.equal(second.data[0].本地文件, '/tmp/tiktok/US_heatherstansberryy_7619062455813131550_1730710259238277880_2026-03-19_12-13-44.mp4')
+  assert.equal(second.data[0].本地文件, '/tmp/tiktok/55件_US_heatherstansberryy_7619062455813131550_1730710259238277880_2026-03-19_12-13-44.mp4')
   assert.equal(second.data[0].联盟视频归因GMV, '$1,517.56')
+})
+
+test('creator video download queue sorts by sold count descending', async () => {
+  const fetchImpl = async (url, init = {}) => {
+    const body = JSON.parse(String(init.body || '{}'))
+    return createJsonResponse({
+      code: 0,
+      message: 'success',
+      data: {
+        video_list_segments: [
+          {
+            total: 2,
+            time_descriptor: body.params.video_list_params[0].time_descriptor,
+            video_performances: [
+              {
+                video_info: {
+                  item_id: 'low-video',
+                  title: 'low sold count',
+                  create_time: '1773951224000',
+                  play_info: {
+                    id: 'play-low',
+                    play_urls: ['https://v16m-default.tiktokcdn-us.com/low.mp4?mime_type=video_mp4'],
+                  },
+                },
+                creator_base: { oec_id: 'creator-low', handle_name: 'lowcreator' },
+                product_base: { id: 'low-product', title: 'Low product' },
+                video_metrics: { video_items_sold_cnt: { value: '7' } },
+              },
+              {
+                video_info: {
+                  item_id: 'high-video',
+                  title: 'high sold count',
+                  create_time: '1773951224000',
+                  play_info: {
+                    id: 'play-high',
+                    play_urls: ['https://v16m-default.tiktokcdn-us.com/high.mp4?mime_type=video_mp4'],
+                  },
+                },
+                creator_base: { oec_id: 'creator-high', handle_name: 'highcreator' },
+                product_base: { id: 'high-product', title: 'High product' },
+                video_metrics: { video_items_sold_cnt: { value: '120' } },
+              },
+            ],
+          },
+        ],
+      },
+    })
+  }
+
+  const first = await runScript('creator-video-download.js', {
+    href: 'https://affiliate.tiktokshopglobalselling.com/insights/transaction-analysis?shop_region=US&shop_id=7496042382582647544',
+    params: { shop_regions: ['US'], page_size: 20, max_pages_per_region: 1 },
+    fetchImpl,
+  })
+
+  assert.equal(first.success, true)
+  assert.equal(first.meta.action, 'download_urls')
+  assert.deepEqual(Array.from(first.meta.shared.pendingRows, row => row.视频ID), ['high-video', 'low-video'])
+  assert.deepEqual(Array.from(first.meta.shared.pendingRows, row => row.视频归因成交件数), ['120', '7'])
+  assert.deepEqual(Array.from(first.meta.items, item => item.url), [
+    'https://v16m-default.tiktokcdn-us.com/high.mp4?mime_type=video_mp4',
+    'https://v16m-default.tiktokcdn-us.com/low.mp4?mime_type=video_mp4',
+  ])
+  assert.equal(first.meta.items[0].filename, '120件_US_highcreator_high-video_high-product_2026-03-19_12-13-44.mp4')
+  assert.equal(first.meta.items[1].filename, '7件_US_lowcreator_low-video_low-product_2026-03-19_12-13-44.mp4')
+
+  const second = await runScript('creator-video-download.js', {
+    phase: 'after_download',
+    href: 'https://affiliate.tiktokshopglobalselling.com/insights/transaction-analysis?shop_region=US&shop_id=7496042382582647544',
+    shared: {
+      ...first.meta.shared,
+      downloadResults: {
+        ok: true,
+        items: [
+          {
+            success: true,
+            filename: first.meta.items[0].filename,
+            path: `/tmp/tiktok/${first.meta.items[0].filename}`,
+            bytes: 120,
+          },
+          {
+            success: true,
+            filename: first.meta.items[1].filename,
+            path: `/tmp/tiktok/${first.meta.items[1].filename}`,
+            bytes: 7,
+          },
+        ],
+      },
+    },
+    fetchImpl,
+  })
+
+  assert.equal(second.success, true)
+  assert.deepEqual(Array.from(second.data, row => row.视频ID), ['high-video', 'low-video'])
+  assert.deepEqual(Array.from(second.data, row => row.本地文件), [
+    '/tmp/tiktok/120件_US_highcreator_high-video_high-product_2026-03-19_12-13-44.mp4',
+    '/tmp/tiktok/7件_US_lowcreator_low-video_low-product_2026-03-19_12-13-44.mp4',
+  ])
 })
 
 test('creator video task completes probe stage across multiple pages before starting downloads', async () => {
@@ -990,7 +1088,79 @@ test('creator video task sends publish date filter and trusts API result rows', 
   assert.equal(result.meta.shared.pendingRows[0].视频ID, 'in-range-video')
   assert.equal(result.meta.shared.pendingRows[1].视频ID, 'out-of-range-video')
   assert.equal(result.meta.items.length, 2)
-  assert.equal(result.meta.items[0].filename, 'US_creatorinrange_in-range-video_product-in-range_2026-05-06_00-57-00.mp4')
+  assert.equal(result.meta.items[0].filename, '0件_US_creatorinrange_in-range-video_product-in-range_2026-05-06_00-57-00.mp4')
+})
+
+test('creator video publish date range accepts local T-2 through the full day', async () => {
+  const calls = []
+  const fetchImpl = async (url, init = {}) => {
+    const body = JSON.parse(String(init.body || '{}'))
+    calls.push(body)
+    return createJsonResponse({
+      code: 0,
+      message: 'success',
+      data: {
+        video_list_segments: [
+          {
+            total: 0,
+            time_descriptor: body.params.video_list_params[0].time_descriptor,
+            video_performances: [],
+          },
+        ],
+      },
+    })
+  }
+
+  const result = await runScript('creator-video-download.js', {
+    href: 'https://affiliate.tiktokshopglobalselling.com/insights/transaction-analysis?shop_region=US&shop_id=7496042382582647544',
+    Date: fixedDateClass('2026-05-12T16:00:00.000Z'),
+    params: {
+      shop_regions: ['US'],
+      publish_date_range: { start: '2026-05-10', end: '2026-05-11' },
+      page_size: 20,
+      max_pages_per_region: 1,
+    },
+    fetchImpl,
+  })
+
+  assert.equal(result.success, true)
+  assert.equal(calls.length, 1)
+  assert.deepEqual(calls[0].params.video_list_params[0].filter.video_post_date, {
+    start_time: 1778400000,
+    end_time: 1778572800,
+    timezone_offset: -28800,
+  })
+})
+
+test('creator video custom statistic date and publish date reject dates after local T-2', async () => {
+  const common = {
+    href: 'https://affiliate.tiktokshopglobalselling.com/insights/transaction-analysis?shop_region=US&shop_id=7496042382582647544',
+    fetchImpl: async () => { throw new Error('should reject before fetch') },
+    Date: fixedDateClass('2026-05-12T16:00:00.000Z'),
+  }
+
+  const statisticResult = await runScript('creator-video-download.js', {
+    ...common,
+    params: {
+      shop_regions: ['US'],
+      max_pages_per_region: 1,
+      time_range: 'custom',
+      date_range: { start: '2026-04-29', end: '2026-05-12' },
+    },
+  })
+  const publishResult = await runScript('creator-video-download.js', {
+    ...common,
+    params: {
+      shop_regions: ['US'],
+      max_pages_per_region: 1,
+      publish_date_range: { start: '2026-05-10', end: '2026-05-12' },
+    },
+  })
+
+  assert.equal(statisticResult.success, false)
+  assert.match(statisticResult.error, /最晚只能选择到 2026-05-11/)
+  assert.equal(publishResult.success, false)
+  assert.match(publishResult.error, /最晚只能选择到 2026-05-11/)
 })
 
 test('creator video default date range follows current page statistic date picker', async () => {
@@ -1081,8 +1251,8 @@ test('creator video quick time range supports last 28 days and previous week in 
   assert.deepEqual(descriptors[0], {
     granularity_type: 1,
     timezone_offset: -28800,
-    start_time: 1775635200,
-    end_time: 1778054400,
+    start_time: 1775721600,
+    end_time: 1778140800,
   })
   assert.deepEqual(descriptors[1], {
     granularity_type: 1,
@@ -1140,12 +1310,255 @@ test('creator video custom time range rejects ranges outside the page latest sel
       shop_regions: ['US'],
       max_pages_per_region: 1,
       time_range: 'custom',
-      date_range: { start: '2026-04-29', end: '2026-05-06' },
+      date_range: { start: '2026-04-29', end: '2026-05-07' },
     },
   })
 
   assert.equal(result.success, false)
-  assert.match(result.error, /最晚只能选择到 2026-05-05/)
+  assert.match(result.error, /最晚只能选择到 2026-05-06/)
+})
+
+test('product management exports selected status tabs and splits packed product fields', async () => {
+  const calls = []
+  const makeProduct = (id, name, overrides = {}) => ({
+    product_id: id,
+    product_name: name,
+    image: { url_list: [`https://img.example/${id}.jpg`] },
+    product_status_view: {
+      product_main_status: overrides.mainStatus ?? 1,
+      product_display_status: overrides.displayStatus ?? 1,
+    },
+    audit_status: overrides.auditStatus ?? 2,
+    total_sku_count: 2,
+    skus: [
+      {
+        id: `${id}-SKU-1`,
+        seller_sku: `${id}-RED`,
+        global_sku_id: `${id}-G-1`,
+        base_price: {
+          sale_price: '$10.00',
+          list_price: '$14.00',
+          promotion_price: '$9.00',
+        },
+        quantities: [
+          { type: 'available', quantity: 7, warehouse_name: 'US main' },
+          { type: 'total', quantity: 9, warehouse_name: 'US main' },
+        ],
+        properties: [
+          { name: 'Color', value_name: 'Red' },
+          { name: 'Size', value_name: '6' },
+        ],
+      },
+      {
+        id: `${id}-SKU-2`,
+        seller_sku: `${id}-BLUE`,
+        global_sku_id: `${id}-G-2`,
+        base_price: { sale_price: '$12.00', list_price: '$16.00' },
+        quantities: [
+          { type: 'available', quantity: 11, warehouse_name: 'US main' },
+          { type: 'total', quantity: 13, warehouse_name: 'US main' },
+        ],
+        properties: [
+          { name: 'Color', value_name: 'Blue' },
+          { name: 'Size', value_name: '7' },
+        ],
+      },
+    ],
+    quantity: { total_available_stock: 18 },
+    total_available_stock: 18,
+    price_range: { min_price_format: '$10.00', max_price_format: '$12.00' },
+    sale_price_ranges: [{ min_price_format: '$10.00', max_price_format: '$12.00' }],
+    product_performance: {
+      last_28days_pv: '1234',
+      last_28days_order: '56',
+      last_28days_gmv: '$789.00',
+      last_7days_gmv_sequential_value: 0.148,
+    },
+    categories: [{ local_display_name: 'Shoes' }, { local_display_name: 'Sneakers' }],
+    brand: { name: 'Balabala' },
+    same_product_count: 3,
+    same_product_info_list: [
+      { product_id: `${id}-GB`, shop_region: 'GB', product_name: `${name} UK` },
+    ],
+    product_tier_info: { tier_name: 'Good', issue_count: 2 },
+    product_low_stock: { is_low_stock: true },
+    edit_time: '1778094950',
+    action_list: [{ name: 'edit' }],
+    actions: [{ name: 'delete' }],
+    ...overrides,
+  })
+  const fixtures = {
+    '2:1': { total: 2, products: [makeProduct('P-100', 'Kids Sneaker Red')] },
+    '2:2': { total: 2, products: [makeProduct('P-101', 'Kids Sneaker Blue')] },
+    '19:1': {
+      total: 1,
+      products: [makeProduct('P-900', 'Needs Attention Sneaker', {
+        mainStatus: 3,
+        displayStatus: 7,
+        violation_records_id: 'V-1',
+        suspend_reason: { title: 'Image issue' },
+      })],
+    },
+  }
+  const fetchImpl = async (url, init = {}) => {
+    const parsed = new URL(String(url))
+    calls.push({
+      url: parsed,
+      credentials: init.credentials,
+      headers: init.headers,
+    })
+    const key = `${parsed.searchParams.get('tab_id')}:${parsed.searchParams.get('page_number')}`
+    const fixture = fixtures[key] || { total: 0, products: [] }
+    return createJsonResponse({
+      code: 0,
+      message: 'success',
+      data: {
+        total_product_count: fixture.total,
+        products: fixture.products,
+      },
+    }, 200, String(url))
+  }
+
+  let result = await runScript('product-management.js', {
+    href: 'https://seller.us.tiktokshopglobalselling.com/product/manage?shop_region=US&shop_id=7496042382582647544',
+    params: {
+      shop_regions: ['US'],
+      product_statuses: ['active', 'violation'],
+      search_content: 'sneaker',
+      page_size: 1,
+      sku_number: 50,
+      max_pages_per_status: 5,
+      page_delay_ms: 1,
+    },
+    fetchImpl,
+  })
+
+  assert.equal(result.success, true)
+  assert.equal(result.meta.action, 'next_phase')
+  assert.equal(result.data.length, 1)
+  assert.equal(result.data[0].状态Tab, '在售')
+  assert.equal(result.data[0].状态TabID, 2)
+  assert.equal(result.data[0].商品ID, 'P-100')
+  assert.equal(result.data[0].商品标题, 'Kids Sneaker Red')
+  assert.equal(result.data[0].商家SKU列表, 'P-100-RED\nP-100-BLUE')
+  assert.equal(result.data[0].SKU规格, 'Color=Red; Size=6\nColor=Blue; Size=7')
+  assert.equal(result.data[0].销售价, '$10.00\n$12.00')
+  assert.equal(result.data[0].价格区间, '$10.00 - $12.00')
+  assert.equal(result.data[0].库存总数, 18)
+  assert.equal(result.data[0].近7天GMV环比, '14.80%')
+  assert.equal(result.data[0].类目, 'Shoes / Sneakers')
+  assert.equal(result.data[0].其他店铺数量, 3)
+  assert.equal(result.data[0].其他店铺, 'GB:P-100-GB:Kids Sneaker Red UK')
+  assert.equal(result.data[0].低库存, '是')
+  assert.equal(Object.prototype.hasOwnProperty.call(result.data[0], '操作'), false)
+  assert.equal(calls[0].url.pathname, '/api/v1/product/local/products/list')
+  assert.equal(calls[0].url.searchParams.get('tab_id'), '2')
+  assert.equal(calls[0].url.searchParams.get('page_number'), '1')
+  assert.equal(calls[0].url.searchParams.get('page_size'), '1')
+  assert.equal(calls[0].url.searchParams.get('sku_number'), '50')
+  assert.equal(calls[0].url.searchParams.get('search_content'), 'sneaker')
+  assert.equal(calls[0].credentials, 'include')
+  assert.equal(calls[0].headers['X-Tt-Oec-Region'], 'US')
+
+  result = await runScript('product-management.js', {
+    href: 'https://seller.us.tiktokshopglobalselling.com/product/manage?shop_region=US&shop_id=7496042382582647544',
+    params: {
+      shop_regions: ['US'],
+      product_statuses: ['active', 'violation'],
+      search_content: 'sneaker',
+      page_size: 1,
+      sku_number: 50,
+      max_pages_per_status: 5,
+      page_delay_ms: 1,
+    },
+    shared: result.meta.shared,
+    fetchImpl,
+  })
+
+  assert.equal(result.success, true)
+  assert.equal(result.data[0].商品ID, 'P-101')
+  assert.equal(calls[1].url.searchParams.get('tab_id'), '2')
+  assert.equal(calls[1].url.searchParams.get('page_number'), '2')
+
+  result = await runScript('product-management.js', {
+    href: 'https://seller.us.tiktokshopglobalselling.com/product/manage?shop_region=US&shop_id=7496042382582647544',
+    params: {
+      shop_regions: ['US'],
+      product_statuses: ['active', 'violation'],
+      search_content: 'sneaker',
+      page_size: 1,
+      sku_number: 50,
+      max_pages_per_status: 5,
+      page_delay_ms: 1,
+    },
+    shared: result.meta.shared,
+    fetchImpl,
+  })
+
+  assert.equal(result.success, true)
+  assert.equal(result.meta.action, 'complete')
+  assert.equal(result.meta.has_more, false)
+  assert.equal(result.data[0].状态Tab, '需要关注')
+  assert.equal(result.data[0].主状态, '已暂停')
+  assert.equal(result.data[0].展示状态, '已冻结')
+  assert.equal(result.data[0].违规记录ID, 'V-1')
+  assert.equal(result.data[0]['暂停/冻结原因'], 'Image issue')
+  assert.equal(calls[2].url.searchParams.get('tab_id'), '19')
+  assert.equal(calls[2].url.searchParams.get('page_number'), '1')
+})
+
+test('product management treats listing failed display status separately from sold-out', async () => {
+  const fetchImpl = async (url) => createJsonResponse({
+    code: 0,
+    message: 'success',
+    data: {
+      total_product_count: 1,
+      products: [
+        {
+          product_id: 'P-failed',
+          product_name: 'Listing Failed Sneaker',
+          product_status_view: {
+            product_main_status: 3,
+            product_display_status: 8,
+          },
+          total_available_stock: 12,
+          skus: [],
+        },
+      ],
+    },
+  }, 200, String(url))
+
+  const result = await runScript('product-management.js', {
+    href: 'https://seller.us.tiktokshopglobalselling.com/product/manage?shop_region=US&shop_id=7496042382582647544',
+    params: {
+      shop_regions: ['US'],
+      product_statuses: ['listing-failed'],
+      page_size: 20,
+      max_pages_per_status: 1,
+    },
+    fetchImpl,
+  })
+
+  assert.equal(result.success, true)
+  assert.equal(result.meta.action, 'complete')
+  assert.equal(result.data[0].状态Tab, '审核失败')
+  assert.equal(result.data[0].展示状态, '审核失败')
+  assert.equal(result.data[0].售罄, '否')
+})
+
+test('product management navigates to seller manage page before collecting when started elsewhere', async () => {
+  const result = await runScript('product-management.js', {
+    href: 'https://affiliate.tiktokshopglobalselling.com/insights/transaction-analysis?shop_region=US&shop_id=7496042382582647544',
+    params: { shop_regions: ['GB'] },
+    fetchImpl: async () => { throw new Error('should navigate before fetch') },
+  })
+
+  assert.equal(result.success, true)
+  assert.equal(result.meta.action, 'next_phase')
+  assert.equal(result.meta.next_phase, 'main')
+  assert.match(result.meta.shared.target_url, /^https:\/\/seller\.eu\.tiktokshopglobalselling\.com\/product\/manage/)
+  assert.match(result.meta.shared.target_url, /shop_region=GB/)
+  assert.match(result.meta.shared.target_url, /shop_id=7496042382582647544/)
 })
 
 test('product rating navigates to seller rating page before collecting when started elsewhere', async () => {

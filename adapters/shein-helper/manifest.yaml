@@ -34,14 +34,14 @@ tasks:
         label: 商品SKC
         rows: 2
         ui_span: compact
-        hint: 支持多个 SKC，一行一个；留空则继承当前页面筛选
+        hint: SHEIN 商品评价接口每次仅支持 1 个 SKC；留空则继承当前页面筛选
         placeholder: "例如：\nsk25021051271714212"
       - id: filter_comment_id
         type: textarea
         label: 评价ID
         rows: 2
         ui_span: compact
-        hint: 支持多个评价ID，一行一个；留空则继承当前页面筛选
+        hint: SHEIN 商品评价接口每次仅支持 1 个评价ID；留空则继承当前页面筛选
         placeholder: "例如：\n18249209315"
       - id: filter_star
         type: select

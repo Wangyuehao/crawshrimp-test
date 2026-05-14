@@ -164,11 +164,10 @@
 
   function latestSelectableDateStartTime() {
     const now = new Date()
-    const platformNow = new Date(now.getTime() + GMT8_OFFSET_SECONDS * 1000)
     const latestLocalMs = Date.UTC(
-      platformNow.getUTCFullYear(),
-      platformNow.getUTCMonth(),
-      platformNow.getUTCDate() - 3,
+      now.getFullYear(),
+      now.getMonth(),
+      now.getDate() - 2,
       0,
       0,
       0,
@@ -413,13 +412,23 @@
     return formatted ? formatted.replace(' ', '_').replace(/:/g, '-') : compact(value) || 'unknown_time'
   }
 
+  function filenameSoldCount(value) {
+    const text = compact(value)
+    if (!text) return '0件'
+    const numberText = text.replace(/,/g, '')
+    const numeric = Number(numberText)
+    if (Number.isFinite(numeric)) return `${Math.max(0, Math.floor(numeric))}件`
+    return `${text}件`
+  }
+
   function pickPlayUrl(playInfo) {
     const urls = Array.isArray(playInfo?.play_urls) ? playInfo.play_urls : []
     return compact(urls.find(url => /mime_type=video_mp4|\.mp4|v16m-default/i.test(String(url || ''))) || urls[0])
   }
 
-  function buildPlannedFilename(region, creatorAccount, videoId, productId, timePart) {
+  function buildPlannedFilename(region, creatorAccount, videoId, productId, timePart, soldCountPart) {
     const parts = [
+      safeFilename(soldCountPart || '0件'),
       safeFilename(region || DEFAULT_REGION),
       safeFilename(creatorAccount || 'unknown_creator'),
       safeFilename(videoId || 'unknown_video'),
@@ -427,6 +436,25 @@
       safeFilename(timePart || 'unknown_time'),
     ].filter(Boolean)
     return `${parts.join('_')}.mp4`
+  }
+
+  function parseSoldCount(value) {
+    const text = compact(value)
+    if (!text) return 0
+    const match = text.replace(/,/g, '').match(/-?\d+(?:\.\d+)?/)
+    if (!match) return 0
+    const numeric = Number(match[0])
+    return Number.isFinite(numeric) ? numeric : 0
+  }
+
+  function sortNormalizedBySoldCount(items) {
+    return items
+      .map((item, index) => ({ item, index }))
+      .sort((left, right) => {
+        const diff = parseSoldCount(right.item?.row?.视频归因成交件数) - parseSoldCount(left.item?.row?.视频归因成交件数)
+        return diff || left.index - right.index
+      })
+      .map(entry => entry.item)
   }
 
   function normalizeVideo(item, context, pageNo, index) {
@@ -440,7 +468,8 @@
     const creatorAccount = compact(creator.handle_name || creator.unique_id || creatorId)
     const productId = compact(product.id || product.product_id)
     const timePart = filenameTime(video.create_time)
-    const filename = buildPlannedFilename(context.region, creatorAccount, videoId, productId, timePart)
+    const soldCount = metricValue(metrics.video_items_sold_cnt)
+    const filename = buildPlannedFilename(context.region, creatorAccount, videoId, productId, timePart, filenameSoldCount(soldCount))
     const playUrl = pickPlayUrl(playInfo)
 
     const row = {
@@ -462,7 +491,7 @@
       商品名称: compact(product.title || product.product_name),
       类目: joinCategories(item?.categories),
       联盟视频归因GMV: amount(metrics.video_gmv),
-      视频归因成交件数: metricValue(metrics.video_items_sold_cnt),
+      视频归因成交件数: soldCount,
       退款金额: amount(metrics.video_refunded_gmv),
       已退款的商品件数: metricValue(metrics.video_refunded_items_cnt),
       归因于视频的订单数: metricValue(metrics.video_orders_cnt),
@@ -678,8 +707,9 @@
     const filteredNormalized = productIdFilter
       ? normalized.filter(item => compact(item?.row?.商品ID) === productIdFilter)
       : normalized
-    const rows = filteredNormalized.map(item => item.row)
-    const downloads = filteredNormalized.map(item => item.download).filter(Boolean)
+    const sortedPageItems = sortNormalizedBySoldCount(filteredNormalized)
+    const rows = sortedPageItems.map(item => item.row)
+    const downloads = sortedPageItems.map(item => item.download).filter(Boolean)
     const cursor = nextCursorState({
       regionIndex,
       pageNo,
@@ -692,8 +722,15 @@
       regionIndex === 0 ? total : Number(shared.total_rows || 0),
       (Array.isArray(shared.pendingRows) ? shared.pendingRows.length : 0) + rows.length,
     )
-    const accumulatedRows = [...(Array.isArray(shared.pendingRows) ? shared.pendingRows : []), ...rows]
-    const accumulatedDownloads = [...(Array.isArray(shared.pendingDownloads) ? shared.pendingDownloads : []), ...downloads]
+    const accumulatedItems = sortNormalizedBySoldCount([
+      ...(Array.isArray(shared.pendingRows) ? shared.pendingRows : []).map((row, index) => ({
+        row,
+        download: Array.isArray(shared.pendingDownloads) ? shared.pendingDownloads[index] || null : null,
+      })),
+      ...sortedPageItems,
+    ])
+    const accumulatedRows = accumulatedItems.map(item => item.row)
+    const accumulatedDownloads = accumulatedItems.map(item => item.download).filter(Boolean)
     const searchCompletedCodes = Math.min(accumulatedRows.length, totalRows || accumulatedRows.length)
     const nextShared = {
       ...shared,

@@ -219,7 +219,7 @@ def _resolve_tmall_buyer_review_item_urls(run_params: dict) -> list[str]:
 
 def _resolve_task_target_entry_url(adapter_id: str, task_id: str, run_params: dict, fallback_url: str) -> str:
     fallback = str(fallback_url or "").strip()
-    if adapter_id == "tiktok-ops-assistant" and task_id in {"product_rating", "creator_video_download"}:
+    if adapter_id == "tiktok-ops-assistant" and task_id in {"product_rating", "product_management_export", "creator_video_download"}:
         raw_regions = run_params.get("shop_regions") or run_params.get("regions")
         if isinstance(raw_regions, list):
             selected_regions = [str(item) for item in raw_regions]
@@ -247,7 +247,8 @@ def _resolve_task_target_entry_url(adapter_id: str, task_id: str, run_params: di
         suffix = f"?shop_region={region}"
         if shop_id:
             suffix += f"&shop_id={shop_id}"
-        return f"https://{host}/product/rating{suffix}"
+        path = "/product/manage" if task_id == "product_management_export" else "/product/rating"
+        return f"https://{host}{path}{suffix}"
     if (adapter_id, task_id) != ("tmall-ops-assistant", "buyer_reviews"):
         return fallback
     urls = _resolve_tmall_buyer_review_item_urls(run_params)
@@ -276,6 +277,12 @@ async def _evaluate_filename_context(runner, expression: str) -> dict:
 async def _build_export_filename_context(adapter_id: str, task_id: str, run_params: dict, runner) -> dict:
     def normalize_range_text(value: str) -> str:
         return str(value or '').strip().replace(' ~ ', '~')
+
+    def normalize_list_scope(value, empty_label: str) -> str:
+        if not isinstance(value, list):
+            return empty_label
+        clean_values = [str(item).strip() for item in value if str(item).strip()]
+        return '+'.join(clean_values) if clean_values else empty_label
 
     if adapter_id == 'shein-helper':
         shein_context_js = r"""
@@ -387,6 +394,41 @@ async def _build_export_filename_context(adapter_id: str, task_id: str, run_para
 
         ctx.setdefault('time_scope', '当前筛选')
         ctx.setdefault('date_range', '当前筛选')
+        return ctx
+
+    if adapter_id == 'tiktok-ops-assistant':
+        ctx = {
+            'time_scope': '当前筛选',
+            'date_range': '当前筛选',
+        }
+        tiktok_regions = run_params.get('shop_regions') or run_params.get('regions') or []
+        ctx['region_scope'] = normalize_list_scope(tiktok_regions, '全部地区')
+        if task_id == 'product_management_export':
+            status_label_map = {
+                'all': '全部',
+                'active': '在售',
+                'reviewing': '审核中',
+                'violation': '需要关注',
+                'deactivate': '已下架',
+                'draft': '草稿',
+                'deleted': '已删除',
+                'sold-out': '售罄',
+                'listing-failed': '审核失败',
+                'suspended': '平台下架',
+                'frozen': '已冻结',
+                'traffic-deboost': '流量管控',
+            }
+            statuses = run_params.get('product_statuses') or run_params.get('statuses') or []
+            if isinstance(statuses, list):
+                clean_statuses = [
+                    status_label_map.get(str(item).strip(), str(item).strip())
+                    for item in statuses
+                    if str(item).strip()
+                ]
+                ctx['status_scope'] = '+'.join(clean_statuses) if clean_statuses else '默认状态'
+            else:
+                raw_status = str(statuses or '').strip()
+                ctx['status_scope'] = status_label_map.get(raw_status, raw_status) or '默认状态'
         return ctx
 
     if adapter_id != 'temu':
@@ -679,17 +721,8 @@ async def _build_export_filename_context(adapter_id: str, task_id: str, run_para
     ctx.setdefault('time_scope', '当前筛选')
     ctx.setdefault('date_range', '当前筛选')
 
-    def normalize_list_scope(value, empty_label: str) -> str:
-        if not isinstance(value, list):
-            return empty_label
-        clean_values = [str(item).strip() for item in value if str(item).strip()]
-        return '+'.join(clean_values) if clean_values else empty_label
-
     regions = run_params.get('regions') or []
     ctx['region_scope'] = normalize_list_scope(regions, '全部地区')
-    if adapter_id == 'tiktok-ops-assistant':
-        tiktok_regions = run_params.get('shop_regions') or run_params.get('regions') or []
-        ctx['region_scope'] = normalize_list_scope(tiktok_regions, '全部地区')
     ctx['site_scope'] = normalize_list_scope(run_params.get('outer_sites') or [], '全部站点')
     ctx['detail_site_scope'] = normalize_list_scope(run_params.get('detail_sites') or [], '全部详情站点')
     ctx['detail_grain_scope'] = normalize_list_scope(run_params.get('detail_grains') or [], '全部粒度')

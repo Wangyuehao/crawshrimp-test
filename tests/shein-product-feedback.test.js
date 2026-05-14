@@ -270,17 +270,17 @@ test('product feedback collect_page replays API with perPage 200', async () => {
       payload: {
         startCommentTime: '2026-01-21 00:00:00',
         commentEndTime: '2026-04-20 23:59:59',
-        skc: ['sk25021051271714212', 'sa260303103351937770319'],
+        skc: 'sk25021051271714212',
         commentId: '18249209315',
         goodsCommentStar: 4,
         page: 2,
         perPage: 30,
       },
-      filter_summary: '评价时间=2026-01-21~2026-04-20; SKC=sk25021051271714212,sa260303103351937770319; 评价ID=18249209315; 星级=4星',
+      filter_summary: '评价时间=2026-01-21~2026-04-20; SKC=sk25021051271714212; 评价ID=18249209315; 星级=4星',
       filter_payload: {
         startCommentTime: '2026-01-21 00:00:00',
         commentEndTime: '2026-04-20 23:59:59',
-        skc: ['sk25021051271714212', 'sa260303103351937770319'],
+        skc: 'sk25021051271714212',
         commentId: '18249209315',
         goodsCommentStar: 4,
       },
@@ -303,7 +303,7 @@ test('product feedback collect_page replays API with perPage 200', async () => {
   assert.equal(result.data[0].商品标题, '商品A-1')
   assert.equal(
     result.data[0].筛选摘要,
-    '评价时间=2026-01-21~2026-04-20; SKC=sk25021051271714212,sa260303103351937770319; 评价ID=18249209315; 星级=4星',
+    '评价时间=2026-01-21~2026-04-20; SKC=sk25021051271714212; 评价ID=18249209315; 星级=4星',
   )
   assert.equal(result.meta.shared.total_rows, 250)
   assert.equal(result.meta.shared.total_batches, 2)
@@ -313,7 +313,7 @@ test('product feedback collect_page replays API with perPage 200', async () => {
   const requestPayload = JSON.parse(fetchCalls[0].init.body)
   assert.equal(requestPayload.page, 1)
   assert.equal(requestPayload.perPage, 200)
-  assert.deepEqual(requestPayload.skc, ['sk25021051271714212', 'sa260303103351937770319'])
+  assert.equal(requestPayload.skc, 'sk25021051271714212')
   assert.equal(requestPayload.commentId, '18249209315')
   assert.equal(requestPayload.goodsCommentStar, 4)
 })
@@ -384,7 +384,7 @@ test('product feedback prepare_template overrides review date range and resets c
   assert.equal(result.meta.shared.total_batches, 0)
 })
 
-test('product feedback prepare_template applies requested skc comment id and star filters', async () => {
+test('product feedback prepare_template rejects multiple skc values because SHEIN accepts one string value', async () => {
   const document = new FakeDocument('商品评价')
   const shared = {
     captureResult: {
@@ -422,6 +422,100 @@ test('product feedback prepare_template applies requested skc comment id and sta
     phase: 'prepare_template',
     params: {
       filter_skc: 'sk25021051271714212\nsa260303103351937770319',
+    },
+    shared,
+    document,
+  })
+
+  assert.equal(result.success, false)
+  assert.equal(result.error, '商品SKC 每次仅支持填写 1 个，请分次运行')
+})
+
+test('product feedback prepare_template rejects multiple comment id values because SHEIN accepts one string value', async () => {
+  const document = new FakeDocument('商品评价')
+  const shared = {
+    captureResult: {
+      matches: [
+        {
+          url: 'https://sso.geiwohuo.com/mgs-api-prefix/goods/comment/list',
+          responseUrl: 'https://sso.geiwohuo.com/mgs-api-prefix/goods/comment/list',
+          method: 'POST',
+          headers: {
+            Accept: 'application/json, text/plain, */*',
+            'Content-Type': 'application/json',
+          },
+          postData: JSON.stringify({
+            startCommentTime: '2026-01-21 00:00:00',
+            commentEndTime: '2026-04-20 23:59:59',
+            skc: 'old-skc',
+            commentId: 'old-comment',
+            goodsCommentStar: 5,
+            page: 12,
+            perPage: 30,
+          }),
+          body: JSON.stringify({
+            code: '0',
+            info: {
+              data: [],
+              meta: { count: 23312 },
+            },
+          }),
+        },
+      ],
+    },
+  }
+
+  const result = await runScript({
+    phase: 'prepare_template',
+    params: {
+      filter_comment_id: '18249209315\n18249209316',
+    },
+    shared,
+    document,
+  })
+
+  assert.equal(result.success, false)
+  assert.equal(result.error, '评价ID 每次仅支持填写 1 个，请分次运行')
+})
+
+test('product feedback prepare_template applies single skc comment id and star filters as strings', async () => {
+  const document = new FakeDocument('商品评价')
+  const shared = {
+    captureResult: {
+      matches: [
+        {
+          url: 'https://sso.geiwohuo.com/mgs-api-prefix/goods/comment/list',
+          responseUrl: 'https://sso.geiwohuo.com/mgs-api-prefix/goods/comment/list',
+          method: 'POST',
+          headers: {
+            Accept: 'application/json, text/plain, */*',
+            'Content-Type': 'application/json',
+          },
+          postData: JSON.stringify({
+            startCommentTime: '2026-01-21 00:00:00',
+            commentEndTime: '2026-04-20 23:59:59',
+            skc: 'old-skc',
+            commentId: 'old-comment',
+            goodsCommentStar: 5,
+            page: 12,
+            perPage: 30,
+          }),
+          body: JSON.stringify({
+            code: '0',
+            info: {
+              data: [],
+              meta: { count: 23312 },
+            },
+          }),
+        },
+      ],
+    },
+  }
+
+  const result = await runScript({
+    phase: 'prepare_template',
+    params: {
+      filter_skc: 'sk25021051271714212',
       filter_comment_id: '18249209315',
       filter_star: '4',
     },
@@ -431,10 +525,10 @@ test('product feedback prepare_template applies requested skc comment id and sta
 
   assert.equal(result.success, true)
   const template = result.meta.shared.api_template
-  assert.deepEqual(Array.from(template.payload.skc), ['sk25021051271714212', 'sa260303103351937770319'])
+  assert.equal(template.payload.skc, 'sk25021051271714212')
   assert.equal(template.payload.commentId, '18249209315')
   assert.equal(template.payload.goodsCommentStar, 4)
-  assert.match(template.filter_summary, /SKC=sk25021051271714212,sa260303103351937770319/)
+  assert.match(template.filter_summary, /SKC=sk25021051271714212/)
   assert.match(template.filter_summary, /评价ID=18249209315/)
   assert.match(template.filter_summary, /星级=4星/)
 })
