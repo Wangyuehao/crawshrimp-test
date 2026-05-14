@@ -1629,6 +1629,143 @@ def _finalize_tiktok_creator_video_outputs(
     return final_refs
 
 
+def _extract_diantoushi_item_id(path: Path) -> str:
+    match = re.search(r'_(\d{6,})(?:\.[^.]+)?$', path.name)
+    return match.group(1) if match else ""
+
+
+def _read_diantoushi_workbook_rows(path: Path, item_id: str) -> tuple[list[str], list[list]]:
+    import openpyxl
+
+    wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
+    ws = wb[wb.sheetnames[0]]
+    rows = list(ws.iter_rows(values_only=True))
+    if not rows:
+        return [], []
+    headers = [str(value or "").strip() for value in rows[0]]
+    body = [list(row) for row in rows[1:] if any(value not in (None, "") for value in row)]
+    return ["商品ID", *headers], [[item_id, *row] for row in body]
+
+
+def _write_diantoushi_merged_workbook(target: Path, headers: list[str], rows: list[list]) -> str:
+    import openpyxl
+    from openpyxl.styles import Alignment, Font, PatternFill
+    from openpyxl.utils import get_column_letter
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "合并表"
+    ws.append(headers or ["商品ID"])
+    for row in rows:
+        ws.append(row)
+
+    fill = PatternFill(fill_type="solid", fgColor="F5F7FA")
+    font = Font(bold=True)
+    alignment = Alignment(horizontal="center", vertical="center")
+    for cell in ws[1]:
+        cell.fill = fill
+        cell.font = font
+        cell.alignment = alignment
+    ws.freeze_panes = "A2"
+
+    for col_idx in range(1, ws.max_column + 1):
+        letter = get_column_letter(col_idx)
+        max_len = 10
+        for row_idx in range(1, min(ws.max_row, 200) + 1):
+            max_len = max(max_len, len(str(ws.cell(row=row_idx, column=col_idx).value or "")))
+        ws.column_dimensions[letter].width = min(max_len + 4, 60)
+
+    target.parent.mkdir(parents=True, exist_ok=True)
+    final_path = _ensure_unique_local_path(target)
+    wb.save(final_path)
+    return str(final_path)
+
+
+def _finalize_tmall_diantoushi_outputs(
+    data_rows: list,
+    runtime_files: list,
+    exported_files: list,
+    runtime_artifact_dir: str,
+    log,
+) -> list[str]:
+    runtime_dir = Path(runtime_artifact_dir)
+    output_root = _default_output_root_for_runtime(runtime_dir, exported_files)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    final_refs = [str(path) for path in runtime_files or [] if str(path or "").strip()]
+    merged_specs = [
+        ("问大家", re.compile(r"店透视问大家_(\d{6,})\.(xlsx|xlsm|xls)$", re.IGNORECASE), f"店透视问大家合并表_{timestamp}.xlsx"),
+        ("评价", re.compile(r"店透视评价_(\d{6,})\.(xlsx|xlsm|xls)$", re.IGNORECASE), f"店透视评价合并表_{timestamp}.xlsx"),
+    ]
+
+    ordered_item_ids: list[str] = []
+    seen_item_ids = set()
+    for row in data_rows or []:
+        item_id = str((row or {}).get("商品ID") or "").strip()
+        if not item_id or item_id in seen_item_ids:
+            continue
+        seen_item_ids.add(item_id)
+        ordered_item_ids.append(item_id)
+
+    for label, pattern, filename in merged_specs:
+        headers: list[str] = []
+        merged_rows: list[list] = []
+        files_by_item: dict[str, Path] = {}
+        extra_files: list[Path] = []
+        for file_ref in runtime_files or []:
+            path = Path(str(file_ref or "")).expanduser()
+            if not path.is_file() or not pattern.search(path.name):
+                continue
+            item_id = _extract_diantoushi_item_id(path)
+            if not item_id:
+                continue
+            if item_id not in files_by_item:
+                files_by_item[item_id] = path
+            else:
+                extra_files.append(path)
+
+        ordered_files: list[Path] = []
+        used_paths = set()
+        for item_id in ordered_item_ids:
+            path = files_by_item.get(item_id)
+            if path and path not in used_paths:
+                used_paths.add(path)
+                ordered_files.append(path)
+        for item_id, path in files_by_item.items():
+            if path not in used_paths:
+                used_paths.add(path)
+                ordered_files.append(path)
+        for path in extra_files:
+            if path not in used_paths:
+                used_paths.add(path)
+                ordered_files.append(path)
+
+        for path in ordered_files:
+            item_id = _extract_diantoushi_item_id(path)
+            if not item_id:
+                continue
+            try:
+                file_headers, file_rows = _read_diantoushi_workbook_rows(path, item_id)
+            except Exception as exc:
+                log(f"[warn] 店透视{label}合并跳过 {path.name}: {exc}")
+                continue
+            if file_headers and not headers:
+                headers = file_headers
+            merged_rows.extend(file_rows)
+
+        if not ordered_files:
+            log(f"店透视{label}合并表跳过：没有下载文件")
+            continue
+        if not merged_rows:
+            log(f"店透视{label}合并表跳过：下载文件无数据行")
+            continue
+        merged_path = _write_diantoushi_merged_workbook(output_root / filename, headers, merged_rows)
+        log(f"店透视{label}合并表 exported: {merged_path} ({len(merged_rows)} rows)")
+        final_refs.append(merged_path)
+
+    final_refs.extend(str(path) for path in exported_files or [] if str(path or "").strip())
+    return final_refs
+
+
 def _rows_raw_to_table(rows_raw, header_row: int = 1):
     if not rows_raw:
         return {"headers": [], "rows": [], "total": 0}
@@ -2302,6 +2439,20 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
                     return merge_output_file_refs(packaged_refs)
                 except Exception as package_error:
                     log(f"[warn] TikTok 视频打包后处理失败，回退到原始输出: {package_error}")
+                    return merge_output_file_refs(runtime_files, exported_files)
+
+            if adapter_id == 'tmall-ops-assistant' and task_id == 'diantoushi_review_export':
+                try:
+                    packaged_refs = _finalize_tmall_diantoushi_outputs(
+                        data_rows=data_rows,
+                        runtime_files=runtime_files,
+                        exported_files=exported_files,
+                        runtime_artifact_dir=runtime_artifact_dir,
+                        log=log,
+                    )
+                    return merge_output_file_refs(packaged_refs)
+                except Exception as package_error:
+                    log(f"[warn] 店透视合并表后处理失败，回退到原始输出: {package_error}")
                     return merge_output_file_refs(runtime_files, exported_files)
 
             return merge_output_file_refs(runtime_files, exported_files)

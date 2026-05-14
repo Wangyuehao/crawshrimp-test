@@ -73,3 +73,50 @@ tasks:
           - 数据来源
           - 执行结果
           - 备注
+  - id: diantoushi_review_export
+    name: 店透视评价表格导出
+    description: 通过已登录 Chrome 中的店透视插件打开商品详情页，依次进入问大家和评价分析，加载评价分页后导出表格
+    script: diantoushi-review-export.js
+    skip_auth: false
+    params:
+      - id: item_links
+        type: textarea
+        label: 商品ID
+        rows: 6
+        required: true
+        placeholder: "一行一个商品ID，例如：1002377057629"
+        hint: 仅需填写商品ID。系统会自动拼接为 https://item.taobao.com/item.htm?id=商品ID 后逐个触发店透视导出。
+      - id: min_pages
+        type: number
+        label: 至少加载页数
+        default: 30
+        min: 1
+        max: 100
+        step: 1
+        ui_span: third
+        hint: 评价分析中存在分页时，默认至少尝试加载 30 页后再导出。
+      - id: download_timeout_ms
+        type: number
+        label: 下载等待毫秒
+        default: 120000
+        min: 10000
+        max: 600000
+        step: 5000
+        ui_span: third
+        hint: 点击导出后等待浏览器下载文件完成的最长时间。
+    trigger:
+      type: manual
+    output:
+      - type: excel
+        filename: "店透视评价导出记录_{timestamp}.xlsx"
+        columns:
+          - 商品ID
+          - 商品链接
+          - 阶段
+          - 已加载页数
+          - 目标页数
+          - 导出文件
+          - 问大家导出文件
+          - 评价分析导出文件
+          - 执行结果
+          - 备注

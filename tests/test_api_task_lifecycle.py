@@ -3,6 +3,7 @@ import unittest
 from pathlib import Path
 import tempfile
 from unittest.mock import AsyncMock, patch
+import openpyxl
 
 from core import api_server
 
@@ -231,6 +232,55 @@ class ApiTaskLifecycleTests(unittest.IsolatedAsyncioTestCase):
             api_server._run_logs.update(original_logs)
             api_server._run_controls.clear()
             api_server._run_controls.update(original_controls)
+
+    async def test_diantoushi_finalize_merges_exported_tables_by_item_order(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runtime_dir = Path(tmpdir) / "runtime" / "123"
+            runtime_dir.mkdir(parents=True)
+            output_dir = Path(tmpdir) / "diantoushi_review_export"
+            summary_file = output_dir / "店透视评价导出记录_20260514-000000.xlsx"
+            output_dir.mkdir(parents=True)
+            summary_file.write_text("placeholder", encoding="utf-8")
+
+            def write_source(path: Path, rows: list[list[str]]):
+                wb = openpyxl.Workbook()
+                ws = wb.active
+                ws.append(["序号", "初评"])
+                for row in rows:
+                    ws.append(row)
+                wb.save(path)
+
+            first_file = runtime_dir / "店透视评价_111111111111.xlsx"
+            second_file = runtime_dir / "店透视评价_222222222222.xlsx"
+            write_source(first_file, [["1", "first-a"], ["2", "first-b"]])
+            write_source(second_file, [["1", "second-a"]])
+
+            logs = []
+            result = api_server._finalize_tmall_diantoushi_outputs(
+                data_rows=[
+                    {"商品ID": "111111111111"},
+                    {"商品ID": "222222222222"},
+                ],
+                runtime_files=[str(second_file), str(first_file)],
+                exported_files=[str(summary_file)],
+                runtime_artifact_dir=str(runtime_dir),
+                log=logs.append,
+            )
+
+            merged_files = [Path(item) for item in result if Path(item).name.startswith("店透视评价合并表_")]
+            self.assertEqual(len(merged_files), 1)
+
+            wb = openpyxl.load_workbook(merged_files[0], read_only=True, data_only=True)
+            try:
+                rows = list(wb.active.iter_rows(values_only=True))
+            finally:
+                wb.close()
+
+            self.assertEqual(rows[0][:3], ("商品ID", "序号", "初评"))
+            self.assertEqual(rows[1][:3], ("111111111111", "1", "first-a"))
+            self.assertEqual(rows[2][:3], ("111111111111", "2", "first-b"))
+            self.assertEqual(rows[3][:3], ("222222222222", "1", "second-a"))
+            self.assertIn(str(summary_file), result)
 
 
 if __name__ == "__main__":
