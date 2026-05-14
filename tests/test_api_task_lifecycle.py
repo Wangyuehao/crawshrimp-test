@@ -269,6 +269,10 @@ class ApiTaskLifecycleTests(unittest.IsolatedAsyncioTestCase):
 
             merged_files = [Path(item) for item in result if Path(item).name.startswith("店透视评价合并表_")]
             self.assertEqual(len(merged_files), 1)
+            self.assertEqual([Path(item).name for item in result], [merged_files[0].name])
+            self.assertNotIn(str(first_file), result)
+            self.assertNotIn(str(second_file), result)
+            self.assertNotIn(str(summary_file), result)
 
             wb = openpyxl.load_workbook(merged_files[0], read_only=True, data_only=True)
             try:
@@ -280,7 +284,6 @@ class ApiTaskLifecycleTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(rows[1][:3], ("111111111111", "1", "first-a"))
             self.assertEqual(rows[2][:3], ("111111111111", "2", "first-b"))
             self.assertEqual(rows[3][:3], ("222222222222", "1", "second-a"))
-            self.assertIn(str(summary_file), result)
 
 
 if __name__ == "__main__":

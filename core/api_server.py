@@ -1724,7 +1724,7 @@ def _finalize_tmall_diantoushi_outputs(
     runtime_dir = Path(runtime_artifact_dir)
     output_root = _default_output_root_for_runtime(runtime_dir, exported_files)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    final_refs = [str(path) for path in runtime_files or [] if str(path or "").strip()]
+    final_refs: list[str] = []
     merged_specs = [
         ("问大家", re.compile(r"店透视问大家_(\d{6,})\.(xlsx|xlsm|xls)$", re.IGNORECASE), f"店透视问大家合并表_{timestamp}.xlsx"),
         ("评价", re.compile(r"店透视评价_(\d{6,})\.(xlsx|xlsm|xls)$", re.IGNORECASE), f"店透视评价合并表_{timestamp}.xlsx"),
@@ -1795,7 +1795,6 @@ def _finalize_tmall_diantoushi_outputs(
         log(f"店透视{label}合并表 exported: {merged_path} ({len(merged_rows)} rows)")
         final_refs.append(merged_path)
 
-    final_refs.extend(str(path) for path in exported_files or [] if str(path or "").strip())
     return final_refs
 
 
