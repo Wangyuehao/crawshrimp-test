@@ -401,7 +401,24 @@
     const pageMatches = [...text.matchAll(/第\s*(\d+)\s*页/g)].map(match => Number(match[1]))
     const clickLoadedPages = 1 + toNumber(shared.loadMoreClicks, 0, 0, 1000)
     const loadedPages = Math.max(pageMatches.length ? Math.max(...pageMatches) : 1, clickLoadedPages)
-    const noDataPatterns = ['暂无数据', '暂无评价', '暂无评论', '没有评价数据', '暂无内容', '暂无分析数据']
+    const noDataPatterns = [
+      '暂无数据',
+      '暂无相关数据',
+      '暂无评价',
+      '暂无买家评价',
+      '暂无评论',
+      '暂无评论数据',
+      '暂无评价数据',
+      '没有评价数据',
+      '没有相关评价',
+      '该商品暂无评价',
+      '该商品暂无评论',
+      '无评价',
+      '暂无内容',
+      '暂无分析数据',
+      '暂无评价分析数据',
+      '暂时没有数据',
+    ]
     const endPatterns = ['没有更多了', '已加载全部', '全部加载完成', '到底了']
     const noDataText = noDataPatterns.find(pattern => text.includes(pattern)) || ''
     const endText = endPatterns.find(pattern => text.includes(pattern)) || ''
@@ -409,8 +426,9 @@
     const loadedRows = loadedRowsMatch ? Number(loadedRowsMatch[1]) : 0
     const totalRows = loadedRowsMatch ? Number(loadedRowsMatch[2]) : 0
     const allRowsLoaded = totalRows > 0 && loadedRows >= totalRows
+    const isLoading = ['获取数据中', '加载中', '正在加载'].some(pattern => text.includes(pattern))
     const hasExport = Boolean(findTextCenter(['导出表格', '批量下载', '导出'])) || text.includes('导出表格')
-    const hasReviewPanel = ['评价分析', '评价趋势', '评价词', '评价内容', '差评', '好评', '中评'].some(pattern => text.includes(pattern))
+    const hasReviewPanel = ['评价趋势', '评价词', '评价内容', '评价明细', '差评', '好评', '中评'].some(pattern => text.includes(pattern))
     const loadMoreMatch = findTextCenter(REVIEW_LOAD_MORE_LABELS)
     const countCandidates = [
       ...[...text.matchAll(/\b(\d+)\s*条/g)].map(match => Number(match[1])),
@@ -421,7 +439,7 @@
     const hasZeroRows = countCandidates.length > 0 && countCandidates.every(value => value <= 0)
     const isEmptyResult = !hasPositiveRows && (Boolean(noDataText) || hasZeroRows)
     return {
-      hasData: !isEmptyResult && (hasExport || hasPositiveRows || hasReviewPanel),
+      hasData: !isEmptyResult && (hasExport || hasReviewPanel || (hasPositiveRows && hasReviewPanel)),
       hasExport,
       hasReviewPanel,
       hasRows: hasPositiveRows,
@@ -435,6 +453,7 @@
       hasLoadMore: Boolean(loadMoreMatch) || REVIEW_LOAD_MORE_LABELS.some(label => text.includes(label)),
       hasAutoLoad: text.includes('自动加载'),
       endReached: Boolean(endText) || allRowsLoaded,
+      isLoading,
       blocker: detectBlocker(),
       noDataText,
       sample: text.slice(0, 240),
@@ -443,7 +462,25 @@
 
   function inspectQaState() {
     const text = bodyText()
-    const noDataPatterns = ['暂无数据', '暂无问答', '暂无内容', '没有问答数据']
+    const noDataPatterns = [
+      '暂无数据',
+      '暂无相关数据',
+      '暂无问答',
+      '暂无问大家',
+      '暂无问大家数据',
+      '暂无问答数据',
+      '暂无相关问答',
+      '暂无相关问题',
+      '没有问答数据',
+      '没有相关问答',
+      '没有相关问题',
+      '该商品暂无问答',
+      '该商品暂无问题',
+      '还没有人提问',
+      '暂无提问',
+      '暂无内容',
+      '暂时没有数据',
+    ]
     const noDataText = noDataPatterns.find(pattern => text.includes(pattern)) || ''
     const hasExport = Boolean(findTextCenter(['导出表格', '批量下载', '导出'])) || text.includes('导出表格')
     const hasQaPanel = text.includes('问大家分析') || text.includes('问大家') || text.includes('问答')
@@ -618,7 +655,13 @@
             diagnostics: { closeQaModal: { waiting: waits, sample: bodyText().slice(0, 220) } },
           }), 800)
         }
-        return fail(`已打开问大家，但未找到弹框关闭按钮；请手动关闭后重试。页面片段：${bodyText().slice(0, 220)}`)
+        return nextPhase('open_review', remember({
+          closeQaWaits: 0,
+          qaPanelWaits: 0,
+          reviewPanelWaits: 0,
+          loadMoreClicks: 0,
+          diagnostics: { closeQaModal: { skipped: true, reason: '未找到问大家弹框关闭按钮，继续尝试评价分析', sample: bodyText().slice(0, 220) } },
+        }), 800)
       }
       return cdpClicks(
         [{ x: match.x, y: match.y, delay_ms: 160 }],
@@ -730,17 +773,24 @@
         : findTextCenter(['自动加载'])
       if (!match) {
         if (reviewState.endReached || reviewState.loadedPages >= minPages) return nextPhase('export_reviews', shared, 500)
-        if (reviewState.hasRows && reviewState.loadedPages < minPages) {
-          return fail(`评价数据只有 ${reviewState.loadedPages} 页，且未找到继续加载入口；页面片段：${reviewState.sample}`)
+        if (reviewState.hasRows || reviewState.hasExport) {
+          return nextPhase('export_reviews', remember({
+            loadedPagesByItem: { ...(shared.loadedPagesByItem || {}), [item.itemId]: reviewState.loadedPages },
+            diagnostics: { loadMore: { ...reviewState, reason: '未找到继续加载入口，按已加载数据导出' } },
+          }), 500)
         }
-        if (reviewState.hasExport) return nextPhase('export_reviews', shared, 500)
-        return fail(`评价数据只有 ${reviewState.loadedPages} 页，且未找到继续加载入口；页面片段：${reviewState.sample}`)
+        return nextPhase('advance_item', remember({
+          noDataItems: [...(shared.noDataItems || []), item.itemId],
+          loadedPagesByItem: { ...(shared.loadedPagesByItem || {}), [item.itemId]: reviewState.loadedPages },
+          diagnostics: { loadMore: { ...reviewState, reason: '未找到继续加载入口且未识别到评价数据' } },
+        }), 300)
       }
       return cdpClicks(
         [{ x: match.x, y: match.y, delay_ms: 160 }],
         'inspect_reviews',
         remember({
           loadMoreClicks: toNumber(shared.loadMoreClicks, 0, 0, 1000) + 1,
+          loadMoreWaits: 0,
           diagnostics: { loadMore: { ...reviewState, label: match.label, text: match.text } },
         }),
         2400,
