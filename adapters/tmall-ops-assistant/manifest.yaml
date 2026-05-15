@@ -104,6 +104,18 @@ tasks:
         step: 5000
         ui_span: third
         hint: 点击导出后等待浏览器下载文件完成的最长时间。
+      - id: browser_download_dir
+        type: directory
+        label: 浏览器下载地址
+        required: false
+        placeholder: "例如：/Users/kennel/Downloads"
+        hint: 选择 Chrome/店透视实际下载文件的目录；不填默认使用系统 Downloads。
+      - id: merged_output_dir
+        type: directory
+        label: 合并表输出地址
+        required: false
+        placeholder: "选填，默认保存到任务输出目录"
+        hint: 选填；填写后仅将最终合并表保存到该目录，不填则保存到默认数据输出目录。
     trigger:
       type: manual
     output:

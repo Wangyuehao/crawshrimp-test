@@ -1269,7 +1269,6 @@ class JSRunner:
 
     async def download_clicks(self, items: list[dict], strict: bool = False) -> dict:
         results: list[dict] = []
-        downloads_dir = Path.home() / "Downloads"
         fallback_xlsx_pattern = re.compile(r".+\.xlsx$", re.IGNORECASE)
 
         for item in items or []:
@@ -1279,6 +1278,10 @@ class JSRunner:
             expected_url = str((item or {}).get("expected_url") or (item or {}).get("url") or "").strip()
             timeout_ms = int((item or {}).get("timeout_ms") or max(self.timeout, 30) * 1000)
             regex_text = str((item or {}).get("expected_name_regex") or "").strip()
+            requested_download_dir = str(
+                (item or {}).get("download_dir") or (item or {}).get("downloadDir") or ""
+            ).strip()
+            downloads_dir = Path(requested_download_dir).expanduser() if requested_download_dir else Path.home() / "Downloads"
 
             if regex_text:
                 try:
@@ -1295,6 +1298,7 @@ class JSRunner:
                     "success": False,
                     "label": label,
                     "filename": filename,
+                    "downloadDir": str(downloads_dir),
                     "error": "download_clicks 缺少 clicks",
                 }
                 results.append(result)
@@ -1307,7 +1311,8 @@ class JSRunner:
                     "success": False,
                     "label": label,
                     "filename": filename,
-                    "error": f"系统下载目录不存在: {downloads_dir}",
+                    "downloadDir": str(downloads_dir),
+                    "error": f"下载目录不存在: {downloads_dir}",
                 }
                 results.append(result)
                 if strict:
@@ -1380,6 +1385,7 @@ class JSRunner:
                     "filename": final_path.name,
                     "path": saved_path,
                     "url": expected_url,
+                    "downloadDir": str(downloads_dir),
                     "sourcePath": str(downloaded),
                     "matchedBy": matched_by,
                     "transientActions": transient_actions,
@@ -1391,6 +1397,7 @@ class JSRunner:
                 "label": label,
                 "filename": filename,
                 "url": expected_url,
+                "downloadDir": str(downloads_dir),
                 "error": "点击后未检测到新下载文件",
                 "transientActions": transient_actions,
             }

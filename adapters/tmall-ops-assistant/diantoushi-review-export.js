@@ -207,6 +207,7 @@
           filename: `店透视${kind}_${item.itemId}.xlsx`,
           expected_name_regex: '.+\\.(xlsx|xls|csv)$',
           timeout_ms: getDownloadTimeoutMs(),
+          download_dir: compact(params.browser_download_dir),
           clicks,
         }],
       },

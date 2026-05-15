@@ -1718,11 +1718,13 @@ def _finalize_tmall_diantoushi_outputs(
     data_rows: list,
     runtime_files: list,
     exported_files: list,
+    run_params: dict | None,
     runtime_artifact_dir: str,
     log,
 ) -> list[str]:
     runtime_dir = Path(runtime_artifact_dir)
-    output_root = _default_output_root_for_runtime(runtime_dir, exported_files)
+    merged_output_dir = str((run_params or {}).get("merged_output_dir") or "").strip()
+    output_root = Path(merged_output_dir).expanduser() if merged_output_dir else _default_output_root_for_runtime(runtime_dir, exported_files)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     final_refs: list[str] = []
     merged_specs = [
@@ -2479,6 +2481,7 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
                         data_rows=data_rows,
                         runtime_files=runtime_files,
                         exported_files=exported_files,
+                        run_params=run_params,
                         runtime_artifact_dir=runtime_artifact_dir,
                         log=log,
                     )
