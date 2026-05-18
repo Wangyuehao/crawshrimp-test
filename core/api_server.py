@@ -2275,6 +2275,7 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
     data = []
     output_files = []
     runtime_artifact_dir = data_sink.prepare_artifact_dir(adapter_id, task_id, run_id, "runtime")
+    runtime_persist_dir = ""
 
     try:
         log(f"[{adapter_id}/{task_id}] Starting...")
@@ -2287,6 +2288,13 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
         for p in task.params:
             if p.id not in run_params and p.default is not None:
                 run_params[p.id] = p.default
+        if adapter_id == 'tmall-ops-assistant' and task_id == 'diantoushi_review_export':
+            merged_output_dir = str(run_params.get('merged_output_dir') or '').strip()
+            runtime_persist_dir = (
+                str(Path(merged_output_dir).expanduser())
+                if merged_output_dir
+                else str(Path(runtime_artifact_dir).expanduser().parent.parent.parent)
+            )
 
         mode = _resolve_task_open_mode(adapter_id, task_id, run_params, task_param_ids)
         current_tab_id = str(runtime_options.get('current_tab_id') or '').strip()
@@ -2366,6 +2374,7 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
             tab_id=str(tab.get('id') or ''),
             tab_url=str(tab.get('url') or ''),
             artifact_dir=runtime_artifact_dir,
+            persist_dir=runtime_persist_dir or None,
         )
 
         def merge_output_file_refs(*groups):
@@ -2642,7 +2651,8 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
     except Exception as e:
         err = str(e)
         log(f"[{adapter_id}/{task_id}] ERROR: {err}")
-        data_sink.fail_run(run_id, err)
+        runtime_files = list(getattr(runner, 'runtime_output_files', []) or []) if runner else []
+        data_sink.fail_run(run_id, err, merge_output_file_refs(runtime_files))
         _run_status[jid] = {'status': 'error', 'run_id': run_id, 'records': 0, 'error': err}
         raise
     finally:

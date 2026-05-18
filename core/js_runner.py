@@ -52,6 +52,7 @@ class JSRunner:
         tab_id: Optional[str] = None,
         tab_url: Optional[str] = None,
         artifact_dir: Optional[str] = None,
+        persist_dir: Optional[str] = None,
     ):
         self.ws_url = ws_url
         self.timeout = min(timeout, MAX_TIMEOUT)
@@ -62,6 +63,9 @@ class JSRunner:
         self._page_file_cache_keys: set[str] = set()
         self.artifact_dir = Path(artifact_dir).expanduser() if artifact_dir else Path(tempfile.mkdtemp(prefix="crawshrimp-runtime-"))
         self.artifact_dir.mkdir(parents=True, exist_ok=True)
+        self.persist_dir = Path(persist_dir).expanduser() if persist_dir else None
+        if self.persist_dir:
+            self.persist_dir.mkdir(parents=True, exist_ok=True)
         self.runtime_output_files: list[str] = []
 
     def _next_id(self) -> int:
@@ -1376,14 +1380,25 @@ class JSRunner:
                 final_path = self._ensure_unique_artifact_path(target_path)
                 final_path.parent.mkdir(parents=True, exist_ok=True)
                 shutil.move(str(downloaded), str(final_path))
+                persist_path = None
+                if self.persist_dir:
+                    persist_target = self.persist_dir / final_path.name
+                    persist_path = self._ensure_unique_artifact_path(persist_target)
+                    persist_path.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(str(final_path), str(persist_path))
                 saved_path = str(final_path)
                 if saved_path not in self.runtime_output_files:
                     self.runtime_output_files.append(saved_path)
+                if persist_path:
+                    persisted = str(persist_path)
+                    if persisted not in self.runtime_output_files:
+                        self.runtime_output_files.append(persisted)
                 results.append({
                     "success": True,
                     "label": label,
                     "filename": final_path.name,
                     "path": saved_path,
+                    "persistedPath": str(persist_path) if persist_path else "",
                     "url": expected_url,
                     "downloadDir": str(downloads_dir),
                     "sourcePath": str(downloaded),

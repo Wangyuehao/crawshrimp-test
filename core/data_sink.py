@@ -87,13 +87,13 @@ def finish_run(run_id: int, records_count: int, output_files: List[str]):
         conn.commit()
 
 
-def fail_run(run_id: int, error: str):
+def fail_run(run_id: int, error: str, output_files: Optional[List[str]] = None):
     with _get_conn() as conn:
         conn.execute("""
             UPDATE task_runs
-            SET status='error', finished_at=?, error=?
+            SET status='error', finished_at=?, error=?, output_files=?
             WHERE id=?
-        """, (datetime.now().isoformat(), error, run_id))
+        """, (datetime.now().isoformat(), error, json.dumps(output_files or []), run_id))
         conn.commit()
 
 

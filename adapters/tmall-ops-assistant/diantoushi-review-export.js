@@ -386,6 +386,10 @@
     return findTextCenter(REVIEW_LOAD_MORE_LABELS) || findSectionByScrolling(REVIEW_LOAD_MORE_LABELS)
   }
 
+  function findQaLoadMoreCenter() {
+    return findTextCenter(REVIEW_LOAD_MORE_LABELS) || findSectionByScrolling(REVIEW_LOAD_MORE_LABELS)
+  }
+
   function bodyText() {
     return compact(frameDocuments().map(frame => frame.doc.body ? frame.doc.body.innerText : '').join(' '))
   }
@@ -462,6 +466,9 @@
 
   function inspectQaState() {
     const text = bodyText()
+    const pageMatches = [...text.matchAll(/第\s*(\d+)\s*页/g)].map(match => Number(match[1]))
+    const clickLoadedPages = 1 + toNumber(shared.qaLoadMoreClicks, 0, 0, 1000)
+    const loadedPages = Math.max(pageMatches.length ? Math.max(...pageMatches) : 1, clickLoadedPages)
     const noDataPatterns = [
       '暂无数据',
       '暂无相关数据',
@@ -482,8 +489,16 @@
       '暂时没有数据',
     ]
     const noDataText = noDataPatterns.find(pattern => text.includes(pattern)) || ''
+    const endPatterns = ['没有更多了', '已加载全部', '全部加载完成', '到底了']
+    const endText = endPatterns.find(pattern => text.includes(pattern)) || ''
+    const loadedRowsMatch = text.match(/已成功加载\s*[:：]?\s*(\d+)\s*\/\s*(\d+)\s*条?数据/)
+    const loadedRows = loadedRowsMatch ? Number(loadedRowsMatch[1]) : 0
+    const totalRows = loadedRowsMatch ? Number(loadedRowsMatch[2]) : 0
+    const allRowsLoaded = totalRows > 0 && loadedRows >= totalRows
+    const isLoading = ['获取数据中', '加载中', '正在加载'].some(pattern => text.includes(pattern))
     const hasExport = Boolean(findTextCenter(['导出表格', '批量下载', '导出'])) || text.includes('导出表格')
     const hasQaPanel = text.includes('问大家分析') || text.includes('问大家') || text.includes('问答')
+    const loadMoreMatch = findTextCenter(REVIEW_LOAD_MORE_LABELS)
     const countCandidates = [
       ...[...text.matchAll(/\b(\d+)\s*条/g)].map(match => Number(match[1])),
       ...[...text.matchAll(/问答.{0,20}?(\d+)/g)].map(match => Number(match[1])),
@@ -500,6 +515,13 @@
       hasCountRows,
       maxCount: countCandidates.length ? Math.max(...countCandidates) : 0,
       hasOfficialRows,
+      loadedPages,
+      loadedRows,
+      totalRows,
+      hasLoadMore: Boolean(loadMoreMatch) || REVIEW_LOAD_MORE_LABELS.some(label => text.includes(label)),
+      hasAutoLoad: text.includes('自动加载'),
+      endReached: Boolean(endText) || allRowsLoaded,
+      isLoading,
       noDataText,
       blocker: detectBlocker(),
       sample: text.slice(0, 240),
@@ -605,7 +627,7 @@
         }), 400)
       }
       if (qaState.hasData) {
-        return nextPhase('export_qa', remember({
+        return nextPhase('inspect_qa', remember({
           diagnostics: { waitQaPanel: qaState },
         }), 400)
       }
@@ -620,6 +642,72 @@
         qaNoDataItems: [...(shared.qaNoDataItems || []), item.itemId],
         diagnostics: { waitQaPanel: qaState },
       }), 400)
+    }
+
+    if (phase === 'inspect_qa') {
+      const blocker = detectBlocker()
+      if (blocker) return fail(`页面出现拦截提示：${blocker}`)
+      const qaState = inspectQaState()
+      if ((qaState.noDataText && !qaState.hasRows) || (qaState.hasExport && !qaState.hasRows)) {
+        return nextPhase('close_qa_modal', remember({
+          qaNoDataItems: [...(shared.qaNoDataItems || []), item.itemId],
+          diagnostics: { inspectQa: qaState },
+        }), 400)
+      }
+      if (!qaState.hasData) {
+        return nextPhase('close_qa_modal', remember({
+          qaNoDataItems: [...(shared.qaNoDataItems || []), item.itemId],
+          diagnostics: { inspectQa: qaState },
+        }), 400)
+      }
+      if (qaState.loadedPages >= minPages || qaState.endReached) {
+        return nextPhase('export_qa', remember({
+          qaLoadedPagesByItem: { ...(shared.qaLoadedPagesByItem || {}), [item.itemId]: qaState.loadedPages },
+          diagnostics: { inspectQa: qaState },
+        }), 400)
+      }
+      return nextPhase('load_qa_more', remember({
+        qaLoadedPagesByItem: { ...(shared.qaLoadedPagesByItem || {}), [item.itemId]: qaState.loadedPages },
+        diagnostics: { inspectQa: qaState },
+      }), 300)
+    }
+
+    if (phase === 'load_qa_more') {
+      const blocker = detectBlocker()
+      if (blocker) return fail(`页面出现拦截提示：${blocker}`)
+      const qaState = inspectQaState()
+      if ((qaState.noDataText && !qaState.hasRows) || (qaState.hasExport && !qaState.hasRows)) {
+        return nextPhase('close_qa_modal', remember({
+          qaNoDataItems: [...(shared.qaNoDataItems || []), item.itemId],
+          diagnostics: { loadQaMore: qaState },
+        }), 400)
+      }
+      const match = qaState.hasLoadMore
+        ? findQaLoadMoreCenter()
+        : findTextCenter(['自动加载'])
+      if (!match) {
+        if (qaState.endReached || qaState.loadedPages >= minPages) return nextPhase('export_qa', shared, 400)
+        if (qaState.hasRows || qaState.hasExport) {
+          return nextPhase('export_qa', remember({
+            qaLoadedPagesByItem: { ...(shared.qaLoadedPagesByItem || {}), [item.itemId]: qaState.loadedPages },
+            diagnostics: { loadQaMore: { ...qaState, reason: '未找到问大家继续加载入口，按已加载数据导出' } },
+          }), 400)
+        }
+        return nextPhase('close_qa_modal', remember({
+          qaNoDataItems: [...(shared.qaNoDataItems || []), item.itemId],
+          diagnostics: { loadQaMore: { ...qaState, reason: '未找到问大家继续加载入口且未识别到数据' } },
+        }), 400)
+      }
+      return cdpClicks(
+        [{ x: match.x, y: match.y, delay_ms: 160 }],
+        'inspect_qa',
+        remember({
+          qaLoadMoreClicks: toNumber(shared.qaLoadMoreClicks, 0, 0, 1000) + 1,
+          qaLoadMoreWaits: 0,
+          diagnostics: { loadQaMore: { ...qaState, label: match.label, text: match.text } },
+        }),
+        2400,
+      )
     }
 
     if (phase === 'export_qa') {
