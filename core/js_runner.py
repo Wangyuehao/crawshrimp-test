@@ -5,6 +5,7 @@ JS 注入执行器
 import base64
 import asyncio
 import hashlib
+import inspect
 import json
 import logging
 import mimetypes
@@ -53,6 +54,7 @@ class JSRunner:
         tab_url: Optional[str] = None,
         artifact_dir: Optional[str] = None,
         persist_dir: Optional[str] = None,
+        download_complete_callback: Optional[Callable[[dict], Any]] = None,
     ):
         self.ws_url = ws_url
         self.timeout = min(timeout, MAX_TIMEOUT)
@@ -66,6 +68,7 @@ class JSRunner:
         self.persist_dir = Path(persist_dir).expanduser() if persist_dir else None
         if self.persist_dir:
             self.persist_dir.mkdir(parents=True, exist_ok=True)
+        self.download_complete_callback = download_complete_callback
         self.runtime_output_files: list[str] = []
 
     def _next_id(self) -> int:
@@ -1393,7 +1396,7 @@ class JSRunner:
                     persisted = str(persist_path)
                     if persisted not in self.runtime_output_files:
                         self.runtime_output_files.append(persisted)
-                results.append({
+                result_item = {
                     "success": True,
                     "label": label,
                     "filename": final_path.name,
@@ -1404,7 +1407,12 @@ class JSRunner:
                     "sourcePath": str(downloaded),
                     "matchedBy": matched_by,
                     "transientActions": transient_actions,
-                })
+                }
+                if self.download_complete_callback is not None:
+                    callback_result = self.download_complete_callback(result_item)
+                    if inspect.isawaitable(callback_result):
+                        await callback_result
+                results.append(result_item)
                 continue
 
             result = {

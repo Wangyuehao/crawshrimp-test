@@ -1680,7 +1680,7 @@ def _read_diantoushi_workbook_rows(path: Path, item_id: str) -> tuple[list[str],
     return ["商品ID", *headers], [[item_id, *row] for row in body]
 
 
-def _write_diantoushi_merged_workbook(target: Path, headers: list[str], rows: list[list]) -> str:
+def _write_diantoushi_merged_workbook(target: Path, headers: list[str], rows: list[list], overwrite: bool = False) -> str:
     import openpyxl
     from openpyxl.styles import Alignment, Font, PatternFill
     from openpyxl.utils import get_column_letter
@@ -1709,7 +1709,7 @@ def _write_diantoushi_merged_workbook(target: Path, headers: list[str], rows: li
         ws.column_dimensions[letter].width = min(max_len + 4, 60)
 
     target.parent.mkdir(parents=True, exist_ok=True)
-    final_path = _ensure_unique_local_path(target)
+    final_path = target if overwrite else _ensure_unique_local_path(target)
     wb.save(final_path)
     return str(final_path)
 
@@ -1745,7 +1745,6 @@ def _finalize_tmall_diantoushi_outputs(
         headers: list[str] = []
         merged_rows: list[list] = []
         files_by_item: dict[str, Path] = {}
-        extra_files: list[Path] = []
         for file_ref in runtime_files or []:
             path = Path(str(file_ref or "")).expanduser()
             if not path.is_file() or not pattern.search(path.name):
@@ -1755,8 +1754,6 @@ def _finalize_tmall_diantoushi_outputs(
                 continue
             if item_id not in files_by_item:
                 files_by_item[item_id] = path
-            else:
-                extra_files.append(path)
 
         ordered_files: list[Path] = []
         used_paths = set()
@@ -1769,11 +1766,6 @@ def _finalize_tmall_diantoushi_outputs(
             if path not in used_paths:
                 used_paths.add(path)
                 ordered_files.append(path)
-        for path in extra_files:
-            if path not in used_paths:
-                used_paths.add(path)
-                ordered_files.append(path)
-
         for path in ordered_files:
             item_id = _extract_diantoushi_item_id(path)
             if not item_id:
@@ -1793,8 +1785,86 @@ def _finalize_tmall_diantoushi_outputs(
         if not merged_rows:
             log(f"店透视{label}合并表跳过：下载文件无数据行")
             continue
-        merged_path = _write_diantoushi_merged_workbook(output_root / filename, headers, merged_rows)
+        merged_path = _write_diantoushi_merged_workbook(output_root / filename, headers, merged_rows, overwrite=True)
         log(f"店透视{label}合并表 exported: {merged_path} ({len(merged_rows)} rows)")
+        final_refs.append(merged_path)
+
+    return final_refs
+
+
+def _refresh_tmall_diantoushi_realtime_outputs(
+    data_rows: list,
+    runtime_files: list,
+    run_params: dict | None,
+    runtime_artifact_dir: str,
+    log,
+) -> list[str]:
+    runtime_dir = Path(runtime_artifact_dir)
+    merged_output_dir = str((run_params or {}).get("merged_output_dir") or "").strip()
+    output_root = Path(merged_output_dir).expanduser() if merged_output_dir else _default_output_root_for_runtime(runtime_dir, [])
+    output_root.mkdir(parents=True, exist_ok=True)
+    runtime_root = runtime_dir.resolve(strict=False)
+    final_refs: list[str] = []
+    merged_specs = [
+        ("问大家", re.compile(r"店透视问大家_(\d{6,})\.(xlsx|xlsm|xls)$", re.IGNORECASE), "店透视问大家实时汇总表.xlsx"),
+        ("评价", re.compile(r"店透视评价_(\d{6,})\.(xlsx|xlsm|xls)$", re.IGNORECASE), "店透视评价实时汇总表.xlsx"),
+    ]
+
+    ordered_item_ids: list[str] = []
+    seen_item_ids = set()
+    for row in data_rows or []:
+        item_id = str((row or {}).get("商品ID") or "").strip()
+        if not item_id or item_id in seen_item_ids:
+            continue
+        seen_item_ids.add(item_id)
+        ordered_item_ids.append(item_id)
+
+    for label, pattern, filename in merged_specs:
+        headers: list[str] = []
+        merged_rows: list[list] = []
+        files_by_item: dict[str, Path] = {}
+        for file_ref in runtime_files or []:
+            path = Path(str(file_ref or "")).expanduser()
+            try:
+                path.resolve(strict=False).relative_to(runtime_root)
+            except Exception:
+                continue
+            if not path.is_file() or not pattern.search(path.name):
+                continue
+            item_id = _extract_diantoushi_item_id(path)
+            if not item_id:
+                continue
+            if item_id not in files_by_item:
+                files_by_item[item_id] = path
+
+        ordered_files: list[Path] = []
+        used_paths = set()
+        for item_id in ordered_item_ids:
+            path = files_by_item.get(item_id)
+            if path and path not in used_paths:
+                used_paths.add(path)
+                ordered_files.append(path)
+        for item_id, path in files_by_item.items():
+            if path not in used_paths:
+                used_paths.add(path)
+                ordered_files.append(path)
+        for path in ordered_files:
+            item_id = _extract_diantoushi_item_id(path)
+            if not item_id:
+                continue
+            try:
+                file_headers, file_rows = _read_diantoushi_workbook_rows(path, item_id)
+            except Exception as exc:
+                log(f"[warn] 店透视{label}实时汇总跳过 {path.name}: {exc}")
+                continue
+            if file_headers and not headers:
+                headers = file_headers
+            merged_rows.extend(file_rows)
+
+        if not merged_rows:
+            continue
+        merged_path = _write_diantoushi_merged_workbook(output_root / filename, headers, merged_rows, overwrite=True)
+        log(f"店透视{label}实时汇总表 updated: {merged_path} ({len(merged_rows)} rows)")
         final_refs.append(merged_path)
 
     return final_refs
@@ -2293,7 +2363,7 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
             runtime_persist_dir = (
                 str(Path(merged_output_dir).expanduser())
                 if merged_output_dir
-                else str(Path(runtime_artifact_dir).expanduser().parent.parent.parent)
+                else str(_default_output_root_for_runtime(Path(runtime_artifact_dir), []))
             )
 
         mode = _resolve_task_open_mode(adapter_id, task_id, run_params, task_param_ids)
@@ -2368,6 +2438,21 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
             if not tab:
                 raise RuntimeError(f"无法打开或找到目标页面：{target_entry_url}")
 
+        async def on_download_complete(_result_item):
+            if adapter_id != 'tmall-ops-assistant' or task_id != 'diantoushi_review_export':
+                return
+            runtime_files = list(getattr(runner, 'runtime_output_files', []) or []) if runner else []
+            realtime_refs = _refresh_tmall_diantoushi_realtime_outputs(
+                data_rows=data,
+                runtime_files=runtime_files,
+                run_params=run_params,
+                runtime_artifact_dir=runtime_artifact_dir,
+                log=log,
+            )
+            for ref in realtime_refs:
+                if ref not in runtime_files and runner is not None:
+                    runner.runtime_output_files.append(ref)
+
         log(f"Found tab: {tab.get('url', '')[:120]}")
         runner = JSRunner(
             bridge.get_tab_ws_url(tab),
@@ -2375,6 +2460,7 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
             tab_url=str(tab.get('url') or ''),
             artifact_dir=runtime_artifact_dir,
             persist_dir=runtime_persist_dir or None,
+            download_complete_callback=on_download_complete,
         )
 
         def merge_output_file_refs(*groups):
