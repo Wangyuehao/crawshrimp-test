@@ -131,19 +131,60 @@
     return rows
   }
 
-  function findDownloadResult(item, kind = '') {
+  function findDownloadResults(item, kind = '') {
     const results = flattenDownloadResults(shared.downloadResults || [])
     const kindPattern = kind === 'qa' ? /问大家/ : kind === 'review' ? /评价/ : null
     const itemResults = results.filter(result => String(result?.label || result?.filename || result?.path || '').includes(item.itemId))
-    if (kindPattern) {
-      const matched = itemResults.find(result => {
-        const text = String(result?.label || result?.filename || result?.path || '')
-        return kindPattern.test(text)
-      })
-      if (matched) return matched
-      return null
-    }
+    if (!kindPattern) return itemResults
+    return itemResults.filter(result => {
+      const text = String(result?.label || result?.filename || result?.path || '')
+      return kindPattern.test(text)
+    })
+  }
+
+  function findDownloadResult(item, kind = '') {
+    const itemResults = findDownloadResults(item, kind)
     return itemResults.find(result => result?.success) || itemResults[0] || null
+  }
+
+  function findLatestDownloadResult(item, kind = '') {
+    const itemResults = findDownloadResults(item, kind)
+    return itemResults.length ? itemResults[itemResults.length - 1] : null
+  }
+
+  function downloadRetryKey(item, kind = '') {
+    return `${kind || 'download'}_${item.itemId}`
+  }
+
+  function shouldRetryDownload(item, kind = '') {
+    const latest = findLatestDownloadResult(item, kind)
+    if (!latest || latest.success) return false
+    const error = compact(latest.error || '')
+    if (!error.includes('点击后未检测到新下载文件')) return false
+    const key = downloadRetryKey(item, kind)
+    return !Boolean((shared.downloadRetryByItem || {})[key])
+  }
+
+  function retryDownloadFromItemStart(item, kind = '', next = {}) {
+    const key = downloadRetryKey(item, kind)
+    location.href = item.url
+    return nextPhase('wait_page', remember({
+      ...next,
+      currentItemId: item.itemId,
+      qaPanelWaits: 0,
+      reviewPanelWaits: 0,
+      closeQaWaits: 0,
+      qaLoadMoreClicks: 0,
+      loadMoreClicks: 0,
+      downloadRetryByItem: { ...(shared.downloadRetryByItem || {}), [key]: true },
+      diagnostics: {
+        downloadRetry: {
+          itemId: item.itemId,
+          kind,
+          reason: '点击后未检测到新下载文件，重新进入商品链接重试一次',
+        },
+      },
+    }), 2500)
   }
 
   function remember(next = {}) {
@@ -196,7 +237,7 @@
       data: [],
       meta: {
         action: 'download_clicks',
-        strict: true,
+        strict: false,
         shared_key: 'downloadResults',
         shared_append: true,
         next_phase: nextPhaseName,
@@ -722,13 +763,18 @@
       if (!match) return fail('未找到“问大家”导出表格入口')
       return downloadClicks(
         [{ x: match.x, y: match.y, delay_ms: 160 }],
-        'close_qa_modal',
+        'after_export_qa',
         item,
         remember({
           diagnostics: { exportQa: { label: match.label, text: match.text, x: match.x, y: match.y } },
         }),
         { kind: '问大家' },
       )
+    }
+
+    if (phase === 'after_export_qa') {
+      if (shouldRetryDownload(item, 'qa')) return retryDownloadFromItemStart(item, 'qa')
+      return nextPhase('close_qa_modal', shared, 300)
     }
 
     if (phase === 'close_qa_modal') {
@@ -899,13 +945,18 @@
       if (!match) return fail('未找到“导出表格”入口')
       return downloadClicks(
         [{ x: match.x, y: match.y, delay_ms: 160 }],
-        'advance_item',
+        'after_export_reviews',
         item,
         remember({
           diagnostics: { exportReviews: { label: match.label, text: match.text, x: match.x, y: match.y } },
         }),
         { kind: '评价' },
       )
+    }
+
+    if (phase === 'after_export_reviews') {
+      if (shouldRetryDownload(item, 'review')) return retryDownloadFromItemStart(item, 'review')
+      return nextPhase('advance_item', shared, 300)
     }
 
     if (phase === 'advance_item') {
