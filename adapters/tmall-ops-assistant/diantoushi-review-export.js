@@ -5,7 +5,24 @@
 
   const DEFAULT_MIN_PAGES = 30
   const DEFAULT_DOWNLOAD_TIMEOUT_MS = 120000
+  const DEFAULT_BATCH_REST_AFTER_MIN = 5
+  const DEFAULT_BATCH_REST_AFTER_MAX = 8
+  const DEFAULT_BATCH_REST_BROWSE_PAGES_MIN = 2
+  const DEFAULT_BATCH_REST_BROWSE_PAGES_MAX = 3
+  const DEFAULT_BATCH_REST_MIN_MS = 180000
+  const DEFAULT_BATCH_REST_MAX_MS = 300000
+  const DEFAULT_ITEM_DELAY_MIN_MS = 5000
+  const DEFAULT_ITEM_DELAY_MAX_MS = 15000
+  const DEFAULT_PAGE_LOAD_DELAY_MIN_MS = 3500
+  const DEFAULT_PAGE_LOAD_DELAY_MAX_MS = 9000
   const REVIEW_LOAD_MORE_LABELS = ['加载下一页', '加载更多', '下一页', '更多评价', '继续加载']
+  const REST_BROWSE_URLS = [
+    'https://www.taobao.com/',
+    'https://s.taobao.com/search?q=%E8%BF%90%E5%8A%A8%E6%9C%8D',
+    'https://s.taobao.com/search?q=%E9%98%B2%E6%99%92%E8%A1%A3',
+    'https://s.taobao.com/search?q=%E7%AB%A5%E8%A3%85',
+    'https://s.taobao.com/search?q=%E5%87%89%E6%84%9F%E8%A1%A3',
+  ]
 
   function compact(value) {
     return String(value == null ? '' : value).replace(/\s+/g, ' ').trim()
@@ -18,6 +35,21 @@
     if (Number.isFinite(min) && integer < min) return min
     if (Number.isFinite(max) && integer > max) return max
     return integer
+  }
+
+  function toBoolean(value, fallback = false) {
+    if (value == null || value === '') return fallback
+    if (typeof value === 'boolean') return value
+    const text = compact(value).toLowerCase()
+    if (['1', 'true', 'yes', 'y', 'on', '开启', '启用', '是'].includes(text)) return true
+    if (['0', 'false', 'no', 'n', 'off', '关闭', '停用', '否'].includes(text)) return false
+    return fallback
+  }
+
+  function randomInt(min, max) {
+    const lower = Math.ceil(Math.min(min, max))
+    const upper = Math.floor(Math.max(min, max))
+    return lower + Math.floor(Math.random() * (upper - lower + 1))
   }
 
   function sleep(ms) {
@@ -261,6 +293,44 @@
 
   function getDownloadTimeoutMs() {
     return toNumber(params.download_timeout_ms, DEFAULT_DOWNLOAD_TIMEOUT_MS, 10000, 600000)
+  }
+
+  function isBatchRestEnabled() {
+    return toBoolean(params.batch_rest_enabled, true)
+  }
+
+  function getItemDelayMs() {
+    const minMs = toNumber(params.item_delay_min_ms, DEFAULT_ITEM_DELAY_MIN_MS, 0, 120000)
+    const maxMs = toNumber(params.item_delay_max_ms, DEFAULT_ITEM_DELAY_MAX_MS, minMs, 180000)
+    return randomInt(minMs, maxMs)
+  }
+
+  function getBatchRestAfterCount() {
+    const minCount = toNumber(params.batch_rest_after_min, DEFAULT_BATCH_REST_AFTER_MIN, 1, 100)
+    const maxCount = toNumber(params.batch_rest_after_max, DEFAULT_BATCH_REST_AFTER_MAX, minCount, 100)
+    return randomInt(minCount, maxCount)
+  }
+
+  function getBatchRestBrowsePages() {
+    const minPages = toNumber(params.batch_rest_browse_pages_min, DEFAULT_BATCH_REST_BROWSE_PAGES_MIN, 1, 10)
+    const maxPages = toNumber(params.batch_rest_browse_pages_max, DEFAULT_BATCH_REST_BROWSE_PAGES_MAX, minPages, 10)
+    return randomInt(minPages, maxPages)
+  }
+
+  function getBatchRestTotalMs() {
+    const minMs = toNumber(params.batch_rest_min_ms, DEFAULT_BATCH_REST_MIN_MS, 60000, 1800000)
+    const maxMs = toNumber(params.batch_rest_max_ms, DEFAULT_BATCH_REST_MAX_MS, minMs, 3600000)
+    return randomInt(minMs, maxMs)
+  }
+
+  function getPageLoadDelayMs() {
+    const minMs = toNumber(params.page_load_delay_min_ms, DEFAULT_PAGE_LOAD_DELAY_MIN_MS, 1000, 60000)
+    const maxMs = toNumber(params.page_load_delay_max_ms, DEFAULT_PAGE_LOAD_DELAY_MAX_MS, minMs, 120000)
+    return randomInt(minMs, maxMs)
+  }
+
+  function getNextBatchRestIndex(fromIndex = 0) {
+    return fromIndex + getBatchRestAfterCount()
   }
 
   function getItemsState() {
@@ -625,7 +695,12 @@
     }
 
     if (phase === 'main') {
-      return nextPhase('navigate', { ...shared, items: state.items, index: state.index }, 300)
+      return nextPhase('navigate', {
+        ...shared,
+        items: state.items,
+        index: state.index,
+        batchRestNextIndex: shared.batchRestNextIndex || getNextBatchRestIndex(state.index),
+      }, 300)
     }
 
     if (phase === 'navigate') {
@@ -634,6 +709,44 @@
         return nextPhase('wait_page', { ...shared, items: state.items, index: state.index, currentItemId: item.itemId }, 2500)
       }
       return nextPhase('wait_page', { ...shared, items: state.items, index: state.index, currentItemId: item.itemId }, 800)
+    }
+
+    if (phase === 'batch_rest_browse') {
+      const rest = shared.batchRest || {}
+      const targetIndex = toNumber(rest.nextIndex, state.index, 0, Math.max(state.items.length - 1, 0))
+      const totalPages = toNumber(rest.totalPages, getBatchRestBrowsePages(), 1, 10)
+      const currentPage = toNumber(rest.currentPage, 0, 0, totalPages)
+      const totalMs = toNumber(rest.totalMs, getBatchRestTotalMs(), 60000, 3600000)
+      const perPageMs = Math.max(Math.floor(totalMs / Math.max(totalPages, 1)), 30000)
+      if (currentPage >= totalPages) {
+        return nextPhase('navigate', {
+          ...shared,
+          index: targetIndex,
+          batchRest: null,
+          batchRestNextIndex: getNextBatchRestIndex(targetIndex),
+        }, getItemDelayMs())
+      }
+      const url = REST_BROWSE_URLS[currentPage % REST_BROWSE_URLS.length]
+      location.href = url
+      return nextPhase('batch_rest_browse', remember({
+        index: targetIndex,
+        batchRest: {
+          nextIndex: targetIndex,
+          totalPages,
+          currentPage: currentPage + 1,
+          totalMs,
+        },
+        diagnostics: {
+          batchRest: {
+            reason: '批次休息浏览淘宝页面，降低连续抓取强度',
+            nextItemIndex: targetIndex,
+            currentPage: currentPage + 1,
+            totalPages,
+            waitMs: perPageMs,
+            url,
+          },
+        },
+      }), perPageMs)
     }
 
     if (phase === 'wait_page') {
@@ -747,7 +860,7 @@
           qaLoadMoreWaits: 0,
           diagnostics: { loadQaMore: { ...qaState, label: match.label, text: match.text } },
         }),
-        2400,
+        getPageLoadDelayMs(),
       )
     }
 
@@ -927,7 +1040,7 @@
           loadMoreWaits: 0,
           diagnostics: { loadMore: { ...reviewState, label: match.label, text: match.text } },
         }),
-        2400,
+        getPageLoadDelayMs(),
       )
     }
 
@@ -964,7 +1077,22 @@
       if (nextIndex >= state.items.length) {
         return nextPhase('complete', { ...shared, index: nextIndex }, 300)
       }
-      return nextPhase('navigate', { ...shared, index: nextIndex }, 800)
+      const nextRestIndex = toNumber(shared.batchRestNextIndex, getNextBatchRestIndex(0), 1, 100000)
+      if (isBatchRestEnabled() && nextIndex >= nextRestIndex) {
+        const totalPages = getBatchRestBrowsePages()
+        const totalMs = getBatchRestTotalMs()
+        return nextPhase('batch_rest_browse', {
+          ...shared,
+          index: nextIndex,
+          batchRest: {
+            nextIndex,
+            totalPages,
+            currentPage: 0,
+            totalMs,
+          },
+        }, getItemDelayMs())
+      }
+      return nextPhase('navigate', { ...shared, index: nextIndex }, getItemDelayMs())
     }
 
     if (phase === 'complete') {

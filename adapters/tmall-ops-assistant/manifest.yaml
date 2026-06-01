@@ -116,6 +116,102 @@ tasks:
         required: false
         placeholder: "选填，默认保存到任务输出目录"
         hint: 选填；填写后仅将最终合并表保存到该目录，不填则保存到默认数据输出目录。
+      - id: batch_rest_enabled
+        type: checkbox
+        label: 启用批次休息
+        default: true
+        ui_span: third
+        hint: 默认开启；每抓取一批商品后暂停，并浏览淘宝页面一段时间，降低连续抓取强度。
+      - id: batch_rest_after_min
+        type: number
+        label: 每批最少商品数
+        default: 5
+        min: 1
+        max: 100
+        step: 1
+        ui_span: third
+        hint: 抓取达到该范围后进入批次休息，默认每 5-8 个商品休息一次。
+      - id: batch_rest_after_max
+        type: number
+        label: 每批最多商品数
+        default: 8
+        min: 1
+        max: 100
+        step: 1
+        ui_span: third
+        hint: 与“每批最少商品数”一起形成随机批次大小。
+      - id: batch_rest_browse_pages_min
+        type: number
+        label: 休息浏览最少页数
+        default: 2
+        min: 1
+        max: 10
+        step: 1
+        ui_span: third
+        hint: 批次休息时随机浏览淘宝页面数量，默认 2-3 页。
+      - id: batch_rest_browse_pages_max
+        type: number
+        label: 休息浏览最多页数
+        default: 3
+        min: 1
+        max: 10
+        step: 1
+        ui_span: third
+        hint: 与“休息浏览最少页数”一起形成随机浏览页数。
+      - id: batch_rest_min_ms
+        type: number
+        label: 休息最少毫秒
+        default: 180000
+        min: 60000
+        max: 1800000
+        step: 30000
+        ui_span: third
+        hint: 批次休息总时长下限，默认 3 分钟。
+      - id: batch_rest_max_ms
+        type: number
+        label: 休息最多毫秒
+        default: 300000
+        min: 60000
+        max: 3600000
+        step: 30000
+        ui_span: third
+        hint: 批次休息总时长上限，默认 5 分钟。
+      - id: item_delay_min_ms
+        type: number
+        label: 商品间隔最少毫秒
+        default: 5000
+        min: 0
+        max: 120000
+        step: 1000
+        ui_span: third
+        hint: 商品之间的随机等待下限，默认 5 秒。
+      - id: item_delay_max_ms
+        type: number
+        label: 商品间隔最多毫秒
+        default: 15000
+        min: 0
+        max: 180000
+        step: 1000
+        ui_span: third
+        hint: 商品之间的随机等待上限，默认 15 秒。
+      - id: page_load_delay_min_ms
+        type: number
+        label: 翻页间隔最少毫秒
+        default: 3500
+        min: 1000
+        max: 60000
+        step: 500
+        ui_span: third
+        hint: 点击“加载下一页/加载更多”后的随机等待下限，默认 3.5 秒。
+      - id: page_load_delay_max_ms
+        type: number
+        label: 翻页间隔最多毫秒
+        default: 9000
+        min: 1000
+        max: 120000
+        step: 500
+        ui_span: third
+        hint: 点击“加载下一页/加载更多”后的随机等待上限，默认 9 秒。
     trigger:
       type: manual
     output:
