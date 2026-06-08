@@ -333,6 +333,68 @@
     return fromIndex + getBatchRestAfterCount()
   }
 
+  function getEntryWaitMs() {
+    return toNumber(params.entry_button_wait_ms, 3000, 500, 30000)
+  }
+
+  function getEntryWaitMaxAttempts() {
+    return toNumber(params.entry_button_wait_attempts, 3, 1, 10)
+  }
+
+  function getEntryRefreshMaxAttempts() {
+    return toNumber(params.entry_button_refresh_attempts, 1, 0, 5)
+  }
+
+  function reloadPage(nextPhaseName, nextShared = shared, sleepMs = 5000) {
+    return {
+      success: true,
+      data: [],
+      meta: {
+        action: 'reload_page',
+        next_phase: nextPhaseName,
+        sleep_ms: sleepMs,
+        shared: nextShared,
+      },
+    }
+  }
+
+  function waitOrRefreshForEntry(kind, nextPhaseName, notFoundMessage) {
+    const waitKey = kind === 'qa' ? 'qaEntryWaits' : 'reviewEntryWaits'
+    const refreshKey = kind === 'qa' ? 'qaEntryRefreshes' : 'reviewEntryRefreshes'
+    const waits = toNumber(shared[waitKey], 0, 0, 100) + 1
+    const maxWaits = getEntryWaitMaxAttempts()
+    const refreshes = toNumber(shared[refreshKey], 0, 0, 100)
+    if (waits <= maxWaits) {
+      return nextPhase(nextPhaseName, remember({
+        [waitKey]: waits,
+        diagnostics: {
+          entryWait: {
+            kind,
+            waiting: waits,
+            maxWaits,
+            reason: '未检测到店透视入口按钮，先等待页面/插件渲染',
+            sample: bodyText().slice(0, 240),
+          },
+        },
+      }), getEntryWaitMs())
+    }
+    if (refreshes < getEntryRefreshMaxAttempts()) {
+      return reloadPage(nextPhaseName, remember({
+        [waitKey]: 0,
+        [refreshKey]: refreshes + 1,
+        diagnostics: {
+          entryRefresh: {
+            kind,
+            refreshes: refreshes + 1,
+            reason: '等待后仍未检测到店透视入口按钮，刷新页面重试',
+            sample: bodyText().slice(0, 240),
+          },
+        },
+      }), 6000)
+    }
+    return fail(notFoundMessage)
+  }
+
   function getItemsState() {
     const items = Array.isArray(shared.items) && shared.items.length ? shared.items : getInputItems()
     return {
@@ -759,11 +821,13 @@
 
     if (phase === 'open_qa') {
       const match = findSectionByScrolling(['问大家', '问大家分析'])
-      if (!match) return fail(`未找到“问大家”入口，请确认店透视插件已启用并在当前页面可见`)
+      if (!match) return waitOrRefreshForEntry('qa', 'open_qa', `未找到“问大家”入口，请确认店透视插件已启用并在当前页面可见`)
       return cdpClicks(
         [{ x: match.x, y: match.y, delay_ms: 160 }],
         'wait_qa_panel',
         remember({
+          qaEntryWaits: 0,
+          qaEntryRefreshes: 0,
           diagnostics: { openQa: { label: match.label, text: match.text, x: match.x, y: match.y } },
         }),
         2200,
@@ -931,12 +995,14 @@
         findTopTextCenter(['评价分析', '评论分析', '买家评价']) ||
         findSectionByScrolling(['评价分析', '评论分析', '买家评价'])
       if (!match) {
-        return fail(`未找到“评价分析”入口；已点击问大家，但当前页面未出现评价分析标签。页面片段：${bodyText().slice(0, 180)}`)
+        return waitOrRefreshForEntry('review', 'open_review', `未找到“评价分析”入口；已点击问大家，但当前页面未出现评价分析标签。页面片段：${bodyText().slice(0, 180)}`)
       }
       return cdpClicks(
         [{ x: match.x, y: match.y, delay_ms: 160 }],
         'wait_review_panel',
         remember({
+          reviewEntryWaits: 0,
+          reviewEntryRefreshes: 0,
           reviewPanelWaits: 0,
           loadMoreClicks: 0,
           diagnostics: { openReview: { label: match.label, text: match.text, x: match.x, y: match.y } },
