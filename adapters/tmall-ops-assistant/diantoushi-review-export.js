@@ -358,6 +358,51 @@
     }
   }
 
+  function appendUnique(list, value) {
+    const text = compact(value)
+    if (!text) return Array.isArray(list) ? list : []
+    const next = Array.isArray(list) ? [...list] : []
+    if (!next.includes(text)) next.push(text)
+    return next
+  }
+
+  function removeValue(list, value) {
+    const text = compact(value)
+    return (Array.isArray(list) ? list : []).filter(item => compact(item) !== text)
+  }
+
+  function deferQaEntryForCompensation(item, message) {
+    return nextPhase('open_review', remember({
+      qaEntryWaits: 0,
+      qaEntryRefreshes: 0,
+      qaEntryDeferredItems: appendUnique(shared.qaEntryDeferredItems, item.itemId),
+      qaEntryPendingCompensationItems: appendUnique(shared.qaEntryPendingCompensationItems, item.itemId),
+      diagnostics: {
+        qaEntryDeferred: {
+          itemId: item.itemId,
+          reason: compact(message) || '未找到问大家入口，先跳过当前商品问大家导出',
+          sample: bodyText().slice(0, 240),
+        },
+      },
+    }), 800)
+  }
+
+  function skipQaEntryAfterCompensation(item, message) {
+    return nextPhase('advance_qa_compensation', remember({
+      qaEntryWaits: 0,
+      qaEntryRefreshes: 0,
+      qaEntryPendingCompensationItems: removeValue(shared.qaEntryPendingCompensationItems, item.itemId),
+      qaEntryMissingItems: appendUnique(shared.qaEntryMissingItems, item.itemId),
+      diagnostics: {
+        qaEntryCompensationSkipped: {
+          itemId: item.itemId,
+          reason: compact(message) || '补偿阶段仍未找到问大家入口，跳过问大家导出',
+          sample: bodyText().slice(0, 240),
+        },
+      },
+    }), 500)
+  }
+
   function waitOrRefreshForEntry(kind, nextPhaseName, notFoundMessage) {
     const waitKey = kind === 'qa' ? 'qaEntryWaits' : 'reviewEntryWaits'
     const refreshKey = kind === 'qa' ? 'qaEntryRefreshes' : 'reviewEntryRefreshes'
@@ -391,6 +436,11 @@
           },
         },
       }), 6000)
+    }
+    if (kind === 'qa') {
+      const item = currentItem()
+      if (item && shared.qaCompensationMode) return skipQaEntryAfterCompensation(item, notFoundMessage)
+      if (item) return deferQaEntryForCompensation(item, notFoundMessage)
     }
     return fail(notFoundMessage)
   }
@@ -709,11 +759,13 @@
     const noData = (shared.noDataItems || []).includes(current.itemId)
     const qaNoData = (shared.qaNoDataItems || []).includes(current.itemId)
     const reviewNoData = (shared.reviewNoDataItems || []).includes(current.itemId)
-    const qaOk = qaNoData || Boolean(qaDownloadResult?.success)
+    const qaEntryMissing = (shared.qaEntryMissingItems || []).includes(current.itemId)
+    const qaOk = qaNoData || qaEntryMissing || Boolean(qaDownloadResult?.success)
     const reviewOk = reviewNoData || Boolean(reviewDownloadResult?.success)
     const status = noData ? '无数据' : (qaOk && reviewOk ? statusWhenReady : '未知')
     const notes = []
     if (qaNoData) notes.push('问大家无数据，已跳过问大家导出')
+    if (qaEntryMissing) notes.push('问大家入口补偿后仍未找到，已跳过问大家导出')
     if (reviewNoData) notes.push('评价分析无数据，已跳过评价导出')
     const errorNote = qaDownloadResult?.error || reviewDownloadResult?.error || fallbackDownloadResult?.error || ''
     return resultRow(current, status, {
@@ -745,6 +797,8 @@
 
     if (!state.items.length) return fail('请填写至少一个商品链接')
     if (!item) {
+      const compensation = startQaCompensationIfNeeded(state)
+      if (compensation) return compensation
       const rows = []
       for (const current of state.items) {
         rows.push(buildCompleteRow(current, '成功'))
@@ -753,8 +807,45 @@
         success: true,
         data: rows,
         meta: { action: 'complete', has_more: false, shared },
-      }
     }
+  }
+
+  function startQaCompensationIfNeeded(state) {
+    if (shared.qaCompensationMode) return null
+    const deferred = Array.isArray(shared.qaEntryPendingCompensationItems) && shared.qaEntryPendingCompensationItems.length
+      ? shared.qaEntryPendingCompensationItems
+      : (shared.qaEntryDeferredItems || [])
+    const queue = deferred
+      .map(itemId => compact(itemId))
+      .filter(itemId => {
+        if (!itemId) return false
+        if ((shared.qaNoDataItems || []).includes(itemId)) return false
+        if ((shared.qaEntryMissingItems || []).includes(itemId)) return false
+        const item = state.items.find(candidate => candidate.itemId === itemId)
+        return item && !findDownloadResult(item, 'qa')?.success
+      })
+    if (!queue.length) return null
+    const nextItem = state.items.find(candidate => candidate.itemId === queue[0])
+    if (!nextItem) return null
+    location.href = nextItem.url
+    return nextPhase('navigate', remember({
+      index: state.items.findIndex(candidate => candidate.itemId === nextItem.itemId),
+      qaCompensationMode: true,
+      qaCompensationQueue: queue,
+      qaCompensationCursor: 0,
+      qaEntryWaits: 0,
+      qaEntryRefreshes: 0,
+      qaPanelWaits: 0,
+      closeQaWaits: 0,
+      qaLoadMoreClicks: 0,
+      diagnostics: {
+        qaEntryCompensationStart: {
+          reason: '所有商品已执行完成，开始补偿此前未找到问大家入口的商品',
+          queue,
+        },
+      },
+    }), getItemDelayMs())
+  }
 
     if (phase === 'main') {
       return nextPhase('navigate', {
@@ -951,6 +1042,7 @@
 
     if (phase === 'after_export_qa') {
       if (shouldRetryDownload(item, 'qa')) return retryDownloadFromItemStart(item, 'qa')
+      if (shared.qaCompensationMode) return nextPhase('advance_qa_compensation', shared, 300)
       return nextPhase('close_qa_modal', shared, 300)
     }
 
@@ -966,12 +1058,26 @@
             diagnostics: { closeQaModal: { waiting: waits, sample: bodyText().slice(0, 220) } },
           }), 800)
         }
+        if (shared.qaCompensationMode) {
+          return nextPhase('advance_qa_compensation', remember({
+            closeQaWaits: 0,
+            qaPanelWaits: 0,
+            diagnostics: { closeQaModal: { skipped: true, compensation: true, reason: '补偿阶段未找到问大家弹框关闭按钮，继续下一个补偿商品', sample: bodyText().slice(0, 220) } },
+          }), 800)
+        }
         return nextPhase('open_review', remember({
           closeQaWaits: 0,
           qaPanelWaits: 0,
           reviewPanelWaits: 0,
           loadMoreClicks: 0,
           diagnostics: { closeQaModal: { skipped: true, reason: '未找到问大家弹框关闭按钮，继续尝试评价分析', sample: bodyText().slice(0, 220) } },
+        }), 800)
+      }
+      if (shared.qaCompensationMode) {
+        return nextPhase('advance_qa_compensation', remember({
+          closeQaWaits: 0,
+          qaPanelWaits: 0,
+          diagnostics: { closeQaModal: { label: match.label, text: match.text, x: match.x, y: match.y, compensation: true } },
         }), 800)
       }
       return cdpClicks(
@@ -1141,6 +1247,8 @@
     if (phase === 'advance_item') {
       const nextIndex = state.index + 1
       if (nextIndex >= state.items.length) {
+        const compensation = startQaCompensationIfNeeded(state)
+        if (compensation) return compensation
         return nextPhase('complete', { ...shared, index: nextIndex }, 300)
       }
       const nextRestIndex = toNumber(shared.batchRestNextIndex, getNextBatchRestIndex(0), 1, 100000)
@@ -1161,7 +1269,59 @@
       return nextPhase('navigate', { ...shared, index: nextIndex }, getItemDelayMs())
     }
 
+    if (phase === 'advance_qa_compensation') {
+      const queue = Array.isArray(shared.qaCompensationQueue) ? shared.qaCompensationQueue : []
+      const cursor = toNumber(shared.qaCompensationCursor, 0, 0, Math.max(queue.length - 1, 0)) + 1
+      const nextItemId = compact(queue[cursor])
+      if (!nextItemId) {
+        return nextPhase('complete', remember({
+          index: state.items.length,
+          qaCompensationMode: false,
+          qaCompensationCursor: cursor,
+          qaEntryPendingCompensationItems: [],
+          diagnostics: {
+            qaEntryCompensationComplete: {
+              reason: '问大家入口补偿流程已结束',
+              total: queue.length,
+            },
+          },
+        }), 300)
+      }
+      const nextIndex = state.items.findIndex(candidate => candidate.itemId === nextItemId)
+      if (nextIndex < 0) {
+        return nextPhase('advance_qa_compensation', remember({
+          qaCompensationCursor: cursor,
+          diagnostics: {
+            qaEntryCompensationMissingItem: {
+              itemId: nextItemId,
+              reason: '补偿队列中的商品已不在当前商品列表，跳过',
+            },
+          },
+        }), 100)
+      }
+      location.href = state.items[nextIndex].url
+      return nextPhase('navigate', remember({
+        index: nextIndex,
+        qaCompensationMode: true,
+        qaCompensationCursor: cursor,
+        qaEntryWaits: 0,
+        qaEntryRefreshes: 0,
+        qaPanelWaits: 0,
+        closeQaWaits: 0,
+        qaLoadMoreClicks: 0,
+        diagnostics: {
+          qaEntryCompensationNext: {
+            itemId: nextItemId,
+            cursor,
+            total: queue.length,
+          },
+        },
+      }), getItemDelayMs())
+    }
+
     if (phase === 'complete') {
+      const compensation = startQaCompensationIfNeeded(state)
+      if (compensation) return compensation
       const rows = []
       for (const current of state.items) {
         rows.push(buildCompleteRow(current, '成功'))
