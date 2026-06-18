@@ -15,7 +15,49 @@
   const DEFAULT_ITEM_DELAY_MAX_MS = 15000
   const DEFAULT_PAGE_LOAD_DELAY_MIN_MS = 3500
   const DEFAULT_PAGE_LOAD_DELAY_MAX_MS = 9000
+  const DEFAULT_QA_FULL_MODE_LOAD_DELAY_MIN_MS = 12000
+  const DEFAULT_QA_FULL_MODE_LOAD_DELAY_MAX_MS = 20000
+  const DEFAULT_QA_POST_PAGE_MIN_POLLS = 3
+  const QA_LOADING_LABELS = ['获取数据中', '加载中', '正在加载', '正在获取', '拼命加载中']
   const REVIEW_LOAD_MORE_LABELS = ['加载下一页', '加载更多', '下一页', '更多评价', '继续加载']
+  const QA_FULL_MODE_LABELS = ['完整模式', '完整问答', '完整问大家']
+  const REVIEW_DATE_DESC_LABELS = [
+    '日期降序',
+    '时间降序',
+    '按日期降序',
+    '按时间降序',
+    '最新优先',
+    '最新排序',
+    '按日期排序',
+    '按时间排序',
+    '日期排序',
+    '时间排序',
+    '日期从新到旧',
+    '时间从新到旧',
+    '按发布日期降序',
+    '按评价日期降序',
+  ]
+  const REVIEW_DATE_DESC_PARENT_HINTS = [
+    '排序',
+    '筛选',
+    '时间',
+    '日期',
+    'sort',
+    'order',
+    'filter',
+    'tab',
+  ]
+  const REVIEW_SORT_TRIGGER_LABELS = [
+    '默认排序',
+    '综合排序',
+    '默认',
+    '排序方式',
+    '排序',
+    '时间筛选',
+    '日期筛选',
+    '选择排序',
+  ]
+  const REVIEW_SORT_ANCHOR_LABELS = ['默认排序', '综合排序', '默认']
   const REST_BROWSE_URLS = [
     'https://www.taobao.com/',
     'https://s.taobao.com/search?q=%E8%BF%90%E5%8A%A8%E6%9C%8D',
@@ -34,6 +76,18 @@
     const integer = Math.floor(parsed)
     if (Number.isFinite(min) && integer < min) return min
     if (Number.isFinite(max) && integer > max) return max
+    return integer
+  }
+
+  function toDurationMs(value, fallbackMs, minMs, maxMs) {
+    const parsed = Number(value)
+    let ms = fallbackMs
+    if (Number.isFinite(parsed)) {
+      ms = parsed >= 1000 ? parsed : parsed * 1000
+    }
+    const integer = Math.floor(ms)
+    if (Number.isFinite(minMs) && integer < minMs) return minMs
+    if (Number.isFinite(maxMs) && integer > maxMs) return maxMs
     return integer
   }
 
@@ -324,9 +378,49 @@
   }
 
   function getPageLoadDelayMs() {
-    const minMs = toNumber(params.page_load_delay_min_ms, DEFAULT_PAGE_LOAD_DELAY_MIN_MS, 1000, 60000)
-    const maxMs = toNumber(params.page_load_delay_max_ms, DEFAULT_PAGE_LOAD_DELAY_MAX_MS, minMs, 120000)
+    const minMs = toDurationMs(params.page_load_delay_min_ms, DEFAULT_PAGE_LOAD_DELAY_MIN_MS, 1000, 60000)
+    const maxMs = toDurationMs(params.page_load_delay_max_ms, DEFAULT_PAGE_LOAD_DELAY_MAX_MS, minMs, 120000)
     return randomInt(minMs, maxMs)
+  }
+
+  function getQaFullModeLoadDelayMs() {
+    const minMs = toDurationMs(
+      params.qa_full_mode_load_delay_min_ms,
+      DEFAULT_QA_FULL_MODE_LOAD_DELAY_MIN_MS,
+      2000,
+      120000,
+    )
+    const maxMs = toDurationMs(
+      params.qa_full_mode_load_delay_max_ms,
+      DEFAULT_QA_FULL_MODE_LOAD_DELAY_MAX_MS,
+      minMs,
+      180000,
+    )
+    return randomInt(minMs, maxMs)
+  }
+
+  function getQaFullModeMaxLoadWaits() {
+    return toNumber(params.qa_full_mode_load_max_waits, 6, 1, 50)
+  }
+
+  function getQaPostPageMinPolls() {
+    return toNumber(params.qa_post_page_min_polls, DEFAULT_QA_POST_PAGE_MIN_POLLS, 0, 20)
+  }
+
+  function hasQaPageAdvanceSignal(qaState) {
+    const pending = shared.qaPendingAdvance || null
+    if (!pending) return true
+    if (qaState.loadedPages > toNumber(pending.basePage, 1, 1, 1000)) return true
+    if (qaState.loadedRows > toNumber(pending.baseLoadedRows, 0, 0, 999999)) return true
+    if (qaState.maxCount > toNumber(pending.baseMaxCount, 0, 0, 999999)) return true
+    if (compact(qaState.sample) && compact(qaState.sample) !== compact(pending.baseSample)) return true
+    return false
+  }
+
+  function isQaStillLoading(text) {
+    const body = compact(text || bodyText())
+    if (!body) return false
+    return QA_LOADING_LABELS.some(label => body.includes(label))
   }
 
   function getNextBatchRestIndex(fromIndex = 0) {
@@ -513,6 +607,153 @@
     return score
   }
 
+  function isClickableLike(el) {
+    if (!el) return false
+    const tag = String(el.tagName || '').toLowerCase()
+    if (tag === 'button' || tag === 'a') return true
+    if (el.getAttribute('role') === 'button') return true
+    if (typeof el.onclick === 'function') return true
+    const cls = String(el.className || '').toLowerCase()
+    if (/(sort|order|filter|dropdown|menu|tab|tab-item|select|option|trigger|item)/.test(cls)) return true
+    return false
+  }
+
+  function isInsideReviewToolbar(el) {
+    if (!el) return false
+    const rect = el.getBoundingClientRect()
+    if (rect.top < 0 || rect.top > window.innerHeight * 0.7) return false
+    let parent = el.parentElement
+    let depth = 0
+    while (parent && depth < 6) {
+      const cls = String(parent.className || '').toLowerCase()
+      if (REVIEW_DATE_DESC_PARENT_HINTS.some(hint => cls.includes(hint))) return true
+      parent = parent.parentElement
+      depth += 1
+    }
+    return false
+  }
+
+  function getElementCenter(el, frame) {
+    const rect = el.getBoundingClientRect()
+    return {
+      x: Math.round(frame.offsetX + rect.left + rect.width / 2),
+      y: Math.round(frame.offsetY + rect.top + rect.height / 2),
+      w: rect.width,
+      h: rect.height,
+    }
+  }
+
+  function findReviewDateSiblingOfDefault() {
+    const elements = allVisibleElements()
+    const anchors = []
+    const dateCandidates = []
+    for (const { el, frame } of elements) {
+      if (!visible(el)) continue
+      const text = textOf(el)
+      if (!text || text.length > 40) continue
+      if (REVIEW_SORT_ANCHOR_LABELS.some(label => text === label || text.includes(label))) {
+        const center = getElementCenter(el, frame)
+        anchors.push({ el, frame, text, ...center })
+        continue
+      }
+      if (text !== '日期' && text !== '时间') continue
+      if (!isInsideReviewToolbar(el) && !isClickableLike(el)) continue
+      const center = getElementCenter(el, frame)
+      dateCandidates.push({ el, frame, text, ...center })
+    }
+    if (!anchors.length || !dateCandidates.length) return null
+    const pairs = []
+    for (const anchor of anchors) {
+      for (const candidate of dateCandidates) {
+        const dx = candidate.x - anchor.x
+        const dy = Math.abs(candidate.y - anchor.y)
+        if (dx <= 6) continue
+        if (dx > Math.max(window.innerWidth * 0.35, 260)) continue
+        if (dy > Math.max(anchor.h, candidate.h) * 1.4 + 12) continue
+        let score = dx + dy * 3
+        if (candidate.text === '日期') score -= 80
+        if (isClickableLike(candidate.el)) score -= 50
+        if (isInsideReviewToolbar(candidate.el)) score -= 30
+        pairs.push({
+          x: candidate.x,
+          y: candidate.y,
+          text: candidate.text,
+          label: `${anchor.text}右侧${candidate.text}`,
+          source: 'default_sibling',
+          score,
+        })
+      }
+    }
+    pairs.sort((a, b) => a.score - b.score)
+    return pairs[0] || null
+  }
+
+  function findReviewDateDescCenter() {
+    const sibling = findReviewDateSiblingOfDefault()
+    if (sibling) {
+      try { window.__lastReviewDateDescPicked = sibling } catch (e) {}
+      return sibling
+    }
+    const elements = allVisibleElements()
+    const candidates = []
+    const diagAll = []
+    for (const { el, frame } of elements) {
+      if (!visible(el)) continue
+      const text = textOf(el)
+      if (!text) continue
+      if (text.length > 60) continue
+      const matchedLabel = REVIEW_DATE_DESC_LABELS.find(label => text === label || text.includes(label))
+      if (!matchedLabel) continue
+      const rect = el.getBoundingClientRect()
+      if (rect.width === 0 || rect.height === 0) continue
+      const clickable = isClickableLike(el)
+      const inToolbar = isInsideReviewToolbar(el)
+      diagAll.push({
+        text, label: matchedLabel,
+        tag: String(el.tagName || '').toLowerCase(),
+        cls: String(el.className || '').slice(0, 120),
+        clickable, inToolbar, w: rect.width, h: rect.height,
+      })
+      if (!clickable && !inToolbar) continue
+      const tag = String(el.tagName || '').toLowerCase()
+      let score = rect.width * rect.height
+      if (text === matchedLabel) score -= 400000
+      else if (text.includes(matchedLabel) && text.length <= matchedLabel.length + 4) score -= 300000
+      if (clickable) score -= 200000
+      if (tag === 'button' || tag === 'a') score -= 200000
+      if (inToolbar) score -= 100000
+      candidates.push({ el, frame, text, label: matchedLabel, score, x: 0, y: 0, w: rect.width, h: rect.height })
+    }
+    candidates.sort((a, b) => a.score - b.score)
+    try {
+      window.__lastReviewDateDescCandidates = candidates.slice(0, 6).map((c) => ({
+        text: c.text, label: c.label, score: c.score, x: c.x, y: c.y, w: c.w, h: c.h,
+        tag: String(c.el.tagName || '').toLowerCase(),
+        cls: String(c.el.className || '').slice(0, 120),
+        clickable: isClickableLike(c.el),
+        inToolbar: isInsideReviewToolbar(c.el),
+      }))
+      window.__lastReviewDateDescAll = diagAll
+    } catch (e) {}
+    for (const candidate of candidates) {
+      const rect = candidate.el.getBoundingClientRect()
+      candidate.x = Math.round(candidate.frame.offsetX + rect.left + rect.width / 2)
+      candidate.y = Math.round(candidate.frame.offsetY + rect.top + rect.height / 2)
+      candidate.el.scrollIntoView({ block: 'center', inline: 'center' })
+      const rectAfter = candidate.el.getBoundingClientRect()
+      const picked = {
+        x: Math.round(candidate.frame.offsetX + rectAfter.left + rectAfter.width / 2),
+        y: Math.round(candidate.frame.offsetY + rectAfter.top + rectAfter.height / 2),
+        text: candidate.text,
+        label: candidate.label,
+        source: 'review_toolbar',
+      }
+      try { window.__lastReviewDateDescPicked = picked } catch (e) {}
+      return picked
+    }
+    return null
+  }
+
   function allVisibleElements() {
     return frameDocuments()
       .flatMap(frame => collectElements(frame.doc).map(el => ({ el, frame })))
@@ -611,6 +852,56 @@
 
   function findQaLoadMoreCenter() {
     return findTextCenter(REVIEW_LOAD_MORE_LABELS) || findSectionByScrolling(REVIEW_LOAD_MORE_LABELS)
+  }
+
+  function isItemMarked(mapName, item) {
+    return Boolean(item?.itemId && (shared[mapName] || {})[item.itemId])
+  }
+
+  function markItem(mapName, item, value = true) {
+    if (!item?.itemId) return shared[mapName] || {}
+    return { ...(shared[mapName] || {}), [item.itemId]: value }
+  }
+
+  function selectQaFullModeBefore(current, nextPhaseName, nextShared = shared) {
+    if (isItemMarked('qaFullModeSelectedByItem', current)) return nextPhase(nextPhaseName, nextShared, 300)
+    const match = findTextCenter(QA_FULL_MODE_LABELS)
+    const selectedShared = remember({
+      ...nextShared,
+      qaFullModeSelectedByItem: markItem('qaFullModeSelectedByItem', current),
+      qaFullModeLoadWaits: 0,
+      diagnostics: {
+        qaFullMode: match
+          ? { label: match.label, text: match.text, x: match.x, y: match.y }
+          : { skipped: true, reason: '未找到问大家完整模式入口，按当前模式继续', sample: bodyText().slice(0, 220) },
+      },
+    })
+    if (!match) return nextPhase(nextPhaseName, selectedShared, 300)
+    return cdpClicks([{ x: match.x, y: match.y, delay_ms: 160 }], nextPhaseName, selectedShared, getQaFullModeLoadDelayMs())
+  }
+
+  function selectReviewDateDescBefore(current, nextPhaseName, nextShared = shared) {
+    if (isItemMarked('reviewDateDescSelectedByItem', current)) return nextPhase(nextPhaseName, nextShared, 300)
+    const match = findReviewDateDescCenter()
+    const diagnostics = {
+      reviewDateDesc: match
+        ? { label: match.label, text: match.text, x: match.x, y: match.y, source: match.source }
+        : { skipped: true, reason: '未找到评价日期降序入口，按当前排序继续', sample: bodyText().slice(0, 220) },
+    }
+    if (!match) {
+      const selectedShared = remember({
+        ...nextShared,
+        reviewDateDescSelectedByItem: markItem('reviewDateDescSelectedByItem', current),
+        diagnostics,
+      })
+      return nextPhase(nextPhaseName, selectedShared, 300)
+    }
+    const selectedShared = remember({
+      ...nextShared,
+      reviewDateDescSelectedByItem: markItem('reviewDateDescSelectedByItem', current),
+      diagnostics,
+    })
+    return cdpClicks([{ x: match.x, y: match.y, delay_ms: 160 }], nextPhaseName, selectedShared, getPageLoadDelayMs())
   }
 
   function bodyText() {
@@ -749,6 +1040,24 @@
       blocker: detectBlocker(),
       sample: text.slice(0, 240),
     }
+  }
+
+  function isQaFullModePending(qaState) {
+    if (!isItemMarked('qaFullModeSelectedByItem', currentItem())) return false
+    if (isQaStillLoading(qaState.sample)) return true
+    if (!qaState.hasExport && !qaState.noDataText) return true
+    if (qaState.hasQaPanel && !qaState.hasRows && !qaState.noDataText) return true
+    return false
+  }
+
+  function shouldForceQaPostPageWait(qaState) {
+    const minPolls = getQaPostPageMinPolls()
+    if (minPolls <= 0) return false
+    const clicks = toNumber(shared.qaLoadMoreClicks, 0, 0, 1000)
+    if (clicks <= 0) return false
+    const waits = toNumber(shared.qaPostPageWaits, 0, 0, 1000)
+    if (waits >= minPolls) return false
+    return true
   }
 
   function buildCompleteRow(current, statusWhenReady = '成功') {
@@ -936,9 +1245,9 @@
         }), 400)
       }
       if (qaState.hasData) {
-        return nextPhase('inspect_qa', remember({
+        return selectQaFullModeBefore(item, 'inspect_qa', remember({
           diagnostics: { waitQaPanel: qaState },
-        }), 400)
+        }))
       }
       const waits = toNumber(shared.qaPanelWaits, 0, 0, 10) + 1
       if (waits < 6) {
@@ -957,6 +1266,36 @@
       const blocker = detectBlocker()
       if (blocker) return fail(`页面出现拦截提示：${blocker}`)
       const qaState = inspectQaState()
+      if (shouldForceQaPostPageWait(qaState)) {
+        const waits = toNumber(shared.qaPostPageWaits, 0, 0, 1000) + 1
+        return nextPhase('inspect_qa', remember({
+          qaPostPageWaits: waits,
+          diagnostics: {
+            inspectQa: {
+              ...qaState,
+              qaPostPageWaiting: true,
+              waiting: waits,
+              minPolls: getQaPostPageMinPolls(),
+              minWaitMs: getQaPostPageMinPolls() * toDurationMs(
+                params.qa_full_mode_load_delay_min_ms,
+                DEFAULT_QA_FULL_MODE_LOAD_DELAY_MIN_MS,
+                2000,
+                120000,
+              ),
+            },
+          },
+        }), getQaFullModeLoadDelayMs())
+      }
+      if (isQaFullModePending(qaState)) {
+        const waits = toNumber(shared.qaFullModeLoadWaits, 0, 0, 50) + 1
+        const maxQaLoadWaits = getQaFullModeMaxLoadWaits()
+        if (waits <= maxQaLoadWaits) {
+          return nextPhase('inspect_qa', remember({
+            qaFullModeLoadWaits: waits,
+            diagnostics: { inspectQa: { ...qaState, qaFullModePending: true, waiting: waits, maxWaits: maxQaLoadWaits } },
+          }), getQaFullModeLoadDelayMs())
+        }
+      }
       if ((qaState.noDataText && !qaState.hasRows) || (qaState.hasExport && !qaState.hasRows)) {
         return nextPhase('close_qa_modal', remember({
           qaNoDataItems: [...(shared.qaNoDataItems || []), item.itemId],
@@ -969,13 +1308,20 @@
           diagnostics: { inspectQa: qaState },
         }), 400)
       }
+      if (!isItemMarked('qaFullModeSelectedByItem', item)) {
+        return selectQaFullModeBefore(item, 'inspect_qa', remember({
+          diagnostics: { inspectQa: qaState },
+        }))
+      }
       if (qaState.loadedPages >= minPages || qaState.endReached) {
         return nextPhase('export_qa', remember({
+          qaPendingAdvance: null,
           qaLoadedPagesByItem: { ...(shared.qaLoadedPagesByItem || {}), [item.itemId]: qaState.loadedPages },
           diagnostics: { inspectQa: qaState },
         }), 400)
       }
       return nextPhase('load_qa_more', remember({
+        qaPendingAdvance: null,
         qaLoadedPagesByItem: { ...(shared.qaLoadedPagesByItem || {}), [item.itemId]: qaState.loadedPages },
         diagnostics: { inspectQa: qaState },
       }), 300)
@@ -985,6 +1331,16 @@
       const blocker = detectBlocker()
       if (blocker) return fail(`页面出现拦截提示：${blocker}`)
       const qaState = inspectQaState()
+      if (isQaFullModePending(qaState)) {
+        const waits = toNumber(shared.qaFullModeLoadWaits, 0, 0, 50) + 1
+        const maxQaLoadWaits = getQaFullModeMaxLoadWaits()
+        if (waits <= maxQaLoadWaits) {
+          return nextPhase('load_qa_more', remember({
+            qaFullModeLoadWaits: waits,
+            diagnostics: { loadQaMore: { ...qaState, qaFullModePending: true, waiting: waits, maxWaits: maxQaLoadWaits } },
+          }), getQaFullModeLoadDelayMs())
+        }
+      }
       if ((qaState.noDataText && !qaState.hasRows) || (qaState.hasExport && !qaState.hasRows)) {
         return nextPhase('close_qa_modal', remember({
           qaNoDataItems: [...(shared.qaNoDataItems || []), item.itemId],
@@ -1013,6 +1369,14 @@
         remember({
           qaLoadMoreClicks: toNumber(shared.qaLoadMoreClicks, 0, 0, 1000) + 1,
           qaLoadMoreWaits: 0,
+          qaFullModeLoadWaits: 0,
+          qaPostPageWaits: 0,
+          qaPendingAdvance: {
+            basePage: qaState.loadedPages,
+            baseLoadedRows: qaState.loadedRows,
+            baseMaxCount: qaState.maxCount,
+            baseSample: qaState.sample,
+          },
           diagnostics: { loadQaMore: { ...qaState, label: match.label, text: match.text } },
         }),
         getPageLoadDelayMs(),
@@ -1122,6 +1486,11 @@
       if (blocker) return fail(`页面出现拦截提示：${blocker}`)
       const reviewState = inspectReviewState()
       if (reviewState.hasReviewPanel || reviewState.hasExport || reviewState.noDataText) {
+        if (reviewState.hasReviewPanel || reviewState.hasExport) {
+          return selectReviewDateDescBefore(item, 'inspect_reviews', remember({
+            diagnostics: { waitReviewPanel: reviewState },
+          }))
+        }
         return nextPhase('inspect_reviews', remember({
           diagnostics: { waitReviewPanel: reviewState },
         }), 500)
@@ -1162,6 +1531,12 @@
           loadedPagesByItem: { ...(shared.loadedPagesByItem || {}), [item.itemId]: reviewState.loadedPages },
           diagnostics: { ...(shared.diagnostics || {}), inspectReviews: reviewState },
         }, 300)
+      }
+      if (!isItemMarked('reviewDateDescSelectedByItem', item)) {
+        return selectReviewDateDescBefore(item, 'inspect_reviews', remember({
+          loadedPagesByItem: { ...(shared.loadedPagesByItem || {}), [item.itemId]: reviewState.loadedPages },
+          diagnostics: { inspectReviews: reviewState },
+        }))
       }
       if (reviewState.loadedPages >= minPages || reviewState.endReached) {
         return nextPhase('export_reviews', {
