@@ -15,12 +15,9 @@
   const DEFAULT_ITEM_DELAY_MAX_MS = 15000
   const DEFAULT_PAGE_LOAD_DELAY_MIN_MS = 3500
   const DEFAULT_PAGE_LOAD_DELAY_MAX_MS = 9000
-  const DEFAULT_QA_FULL_MODE_LOAD_DELAY_MIN_MS = 12000
-  const DEFAULT_QA_FULL_MODE_LOAD_DELAY_MAX_MS = 20000
   const DEFAULT_QA_POST_PAGE_MIN_POLLS = 3
   const QA_LOADING_LABELS = ['获取数据中', '加载中', '正在加载', '正在获取', '拼命加载中']
   const REVIEW_LOAD_MORE_LABELS = ['加载下一页', '加载更多', '下一页', '更多评价', '继续加载']
-  const QA_FULL_MODE_LABELS = ['完整模式', '完整问答', '完整问大家']
   const REVIEW_DATE_DESC_LABELS = [
     '日期降序',
     '时间降序',
@@ -381,26 +378,6 @@
     const minMs = toDurationMs(params.page_load_delay_min_ms, DEFAULT_PAGE_LOAD_DELAY_MIN_MS, 1000, 60000)
     const maxMs = toDurationMs(params.page_load_delay_max_ms, DEFAULT_PAGE_LOAD_DELAY_MAX_MS, minMs, 120000)
     return randomInt(minMs, maxMs)
-  }
-
-  function getQaFullModeLoadDelayMs() {
-    const minMs = toDurationMs(
-      params.qa_full_mode_load_delay_min_ms,
-      DEFAULT_QA_FULL_MODE_LOAD_DELAY_MIN_MS,
-      2000,
-      120000,
-    )
-    const maxMs = toDurationMs(
-      params.qa_full_mode_load_delay_max_ms,
-      DEFAULT_QA_FULL_MODE_LOAD_DELAY_MAX_MS,
-      minMs,
-      180000,
-    )
-    return randomInt(minMs, maxMs)
-  }
-
-  function getQaFullModeMaxLoadWaits() {
-    return toNumber(params.qa_full_mode_load_max_waits, 6, 1, 50)
   }
 
   function getQaPostPageMinPolls() {
@@ -863,23 +840,6 @@
     return { ...(shared[mapName] || {}), [item.itemId]: value }
   }
 
-  function selectQaFullModeBefore(current, nextPhaseName, nextShared = shared) {
-    if (isItemMarked('qaFullModeSelectedByItem', current)) return nextPhase(nextPhaseName, nextShared, 300)
-    const match = findTextCenter(QA_FULL_MODE_LABELS)
-    const selectedShared = remember({
-      ...nextShared,
-      qaFullModeSelectedByItem: markItem('qaFullModeSelectedByItem', current),
-      qaFullModeLoadWaits: 0,
-      diagnostics: {
-        qaFullMode: match
-          ? { label: match.label, text: match.text, x: match.x, y: match.y }
-          : { skipped: true, reason: '未找到问大家完整模式入口，按当前模式继续', sample: bodyText().slice(0, 220) },
-      },
-    })
-    if (!match) return nextPhase(nextPhaseName, selectedShared, 300)
-    return cdpClicks([{ x: match.x, y: match.y, delay_ms: 160 }], nextPhaseName, selectedShared, getQaFullModeLoadDelayMs())
-  }
-
   function selectReviewDateDescBefore(current, nextPhaseName, nextShared = shared) {
     if (isItemMarked('reviewDateDescSelectedByItem', current)) return nextPhase(nextPhaseName, nextShared, 300)
     const match = findReviewDateDescCenter()
@@ -1040,14 +1000,6 @@
       blocker: detectBlocker(),
       sample: text.slice(0, 240),
     }
-  }
-
-  function isQaFullModePending(qaState) {
-    if (!isItemMarked('qaFullModeSelectedByItem', currentItem())) return false
-    if (isQaStillLoading(qaState.sample)) return true
-    if (!qaState.hasExport && !qaState.noDataText) return true
-    if (qaState.hasQaPanel && !qaState.hasRows && !qaState.noDataText) return true
-    return false
   }
 
   function shouldForceQaPostPageWait(qaState) {
@@ -1245,9 +1197,9 @@
         }), 400)
       }
       if (qaState.hasData) {
-        return selectQaFullModeBefore(item, 'inspect_qa', remember({
+        return nextPhase('inspect_qa', remember({
           diagnostics: { waitQaPanel: qaState },
-        }))
+        }), 300)
       }
       const waits = toNumber(shared.qaPanelWaits, 0, 0, 10) + 1
       if (waits < 6) {
@@ -1276,25 +1228,10 @@
               qaPostPageWaiting: true,
               waiting: waits,
               minPolls: getQaPostPageMinPolls(),
-              minWaitMs: getQaPostPageMinPolls() * toDurationMs(
-                params.qa_full_mode_load_delay_min_ms,
-                DEFAULT_QA_FULL_MODE_LOAD_DELAY_MIN_MS,
-                2000,
-                120000,
-              ),
+              minWaitMs: getQaPostPageMinPolls() * getPageLoadDelayMs(),
             },
           },
-        }), getQaFullModeLoadDelayMs())
-      }
-      if (isQaFullModePending(qaState)) {
-        const waits = toNumber(shared.qaFullModeLoadWaits, 0, 0, 50) + 1
-        const maxQaLoadWaits = getQaFullModeMaxLoadWaits()
-        if (waits <= maxQaLoadWaits) {
-          return nextPhase('inspect_qa', remember({
-            qaFullModeLoadWaits: waits,
-            diagnostics: { inspectQa: { ...qaState, qaFullModePending: true, waiting: waits, maxWaits: maxQaLoadWaits } },
-          }), getQaFullModeLoadDelayMs())
-        }
+        }), getPageLoadDelayMs())
       }
       if ((qaState.noDataText && !qaState.hasRows) || (qaState.hasExport && !qaState.hasRows)) {
         return nextPhase('close_qa_modal', remember({
@@ -1307,11 +1244,6 @@
           qaNoDataItems: [...(shared.qaNoDataItems || []), item.itemId],
           diagnostics: { inspectQa: qaState },
         }), 400)
-      }
-      if (!isItemMarked('qaFullModeSelectedByItem', item)) {
-        return selectQaFullModeBefore(item, 'inspect_qa', remember({
-          diagnostics: { inspectQa: qaState },
-        }))
       }
       if (qaState.loadedPages >= minPages || qaState.endReached) {
         return nextPhase('export_qa', remember({
@@ -1331,16 +1263,6 @@
       const blocker = detectBlocker()
       if (blocker) return fail(`页面出现拦截提示：${blocker}`)
       const qaState = inspectQaState()
-      if (isQaFullModePending(qaState)) {
-        const waits = toNumber(shared.qaFullModeLoadWaits, 0, 0, 50) + 1
-        const maxQaLoadWaits = getQaFullModeMaxLoadWaits()
-        if (waits <= maxQaLoadWaits) {
-          return nextPhase('load_qa_more', remember({
-            qaFullModeLoadWaits: waits,
-            diagnostics: { loadQaMore: { ...qaState, qaFullModePending: true, waiting: waits, maxWaits: maxQaLoadWaits } },
-          }), getQaFullModeLoadDelayMs())
-        }
-      }
       if ((qaState.noDataText && !qaState.hasRows) || (qaState.hasExport && !qaState.hasRows)) {
         return nextPhase('close_qa_modal', remember({
           qaNoDataItems: [...(shared.qaNoDataItems || []), item.itemId],
@@ -1369,7 +1291,6 @@
         remember({
           qaLoadMoreClicks: toNumber(shared.qaLoadMoreClicks, 0, 0, 1000) + 1,
           qaLoadMoreWaits: 0,
-          qaFullModeLoadWaits: 0,
           qaPostPageWaits: 0,
           qaPendingAdvance: {
             basePage: qaState.loadedPages,

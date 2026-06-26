@@ -212,33 +212,6 @@ tasks:
         step: 0.5
         ui_span: third
         hint: 点击“加载下一页/加载更多”后的随机等待上限，默认 9 秒。
-      - id: qa_full_mode_load_delay_min_ms
-        type: number
-        label: 问大家完整模式加载最少秒
-        default: 12
-        min: 2
-        max: 120
-        step: 0.5
-        ui_span: third
-        hint: 切到“完整模式”后每轮轮询加载完成的随机等待下限；完整模式问答较多，默认 12 秒。
-      - id: qa_full_mode_load_delay_max_ms
-        type: number
-        label: 问大家完整模式加载最多秒
-        default: 20
-        min: 2
-        max: 180
-        step: 0.5
-        ui_span: third
-        hint: 切到“完整模式”后每轮轮询加载完成的随机等待上限，默认 20 秒。
-      - id: qa_full_mode_load_max_waits
-        type: number
-        label: 问大家完整模式最多轮询次数
-        default: 10
-        min: 1
-        max: 50
-        step: 1
-        ui_span: third
-        hint: 检测到“加载中/获取数据中”文本后每轮最多继续轮询的次数；翻页后会重新开始计数，避免完整模式慢页过早超时。
       - id: qa_post_page_min_polls
         type: number
         label: 问大家翻页后最少等待轮数
