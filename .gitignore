@@ -11,5 +11,11 @@ __pycache__/
 data/
 logs/
 *.xlsx
+!adapters/competitive-analysis/template_input.xlsx
 *.log
 .env
+venv/
+.idea/
+tests/
+openspec/
+.sdd/

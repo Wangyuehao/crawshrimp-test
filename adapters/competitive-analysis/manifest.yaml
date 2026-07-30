@@ -1,0 +1,51 @@
+id: competitive-analysis
+name: 竞品分析
+version: 0.1.0
+author: wangyuehao
+description: 上传「输入内容」Excel，自动完成BI看板、商品360、自品问大家及竞品店透视（问大家、评价分析）取数，汇总导出为Excel
+entry_url: https://guanbi.ecsemir.com/page/j54270c33616049dcb650111
+tab_match_prefixes:
+- https://guanbi.ecsemir.com/
+- https://smbd.semirapp.cn/
+- https://myseller.taobao.com/
+- https://detail.tmall.com/
+tasks:
+- id: run_all
+  name: 一键竞品分析
+  description: 上传输入内容Excel模板，系统自动依次从BI看板、商品360、自品问大家、竞品店透视取数，并汇总导出
+  script: orchestrator.js
+  skip_auth: true
+  params:
+  - id: input_excel
+    type: file_excel
+    label: 输入内容Excel
+    required: true
+    template_file: template_input.xlsx
+    template_label: 下载输入模板
+    hint: 按照模板格式填写：结构名称、款号、自品ID、竞品ID、取值时间
+  trigger:
+    type: manual
+  output:
+  - type: excel
+    filename: 竞品分析汇总_{timestamp}.xlsx
+    # 每个数据源独立输出，保留实际采集到的指标/明细，不能只看汇总状态。
+    sheet_key: 数据源
+    sheets:
+    - name: BI看板-单品分析
+      columns: [款号/商品ID, 结构名称, 指标名称, 指标值, 状态, 备注]
+    - name: 商品360
+      columns: [款号/商品ID, 结构名称, 指标名称, 指标值, 状态, 备注]
+    - name: 天猫问大家
+      columns: [款号/商品ID, 结构名称, 指标名称, 指标值, 状态, 备注]
+    - name: 竞品评价
+      columns: [款号/商品ID, 结构名称, 指标名称, 指标值, 状态, 备注]
+    - name: 竞品店透视
+      columns: [款号/商品ID, 结构名称, 指标名称, 指标值, 状态, 备注]
+    columns:
+    - 数据源
+    - 款号/商品ID
+    - 结构名称
+    - 指标名称
+    - 指标值
+    - 状态
+    - 备注

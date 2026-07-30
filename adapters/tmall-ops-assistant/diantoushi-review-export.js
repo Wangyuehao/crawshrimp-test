@@ -870,8 +870,41 @@
 
   function detectBlocker() {
     const text = bodyText()
-    const patterns = ['请先登录', '请登录', '安全验证', '滑动验证', '拖动滑块', '访问受限', '异常流量', '人机验证', '验证码']
+    const patterns = ['请先登录', '请登录', '安全验证', '滑动验证', '拖动滑块', '访问受限', '异常流量', '人机验证', '验证码', '访问太频繁', '请稍后重试']
     return patterns.find(pattern => text.includes(pattern)) || ''
+  }
+
+  function isRateLimited(blocker = '') {
+    const text = `${blocker} ${bodyText()}`
+    return text.includes('访问太频繁') || text.includes('请稍后重试') || text.includes('操作频繁')
+  }
+
+  function resolveBlocker(blocker, resumePhase) {
+    if (!blocker) return null
+    if (!isRateLimited(blocker)) return fail(`页面出现拦截提示：${blocker}`)
+    // 频控时不再继续“加载更多”，避免扩大限制：直接导出当前已经加载的
+    // 数据，然后转入当前商品的下一项（问大家→评价，评价→下一商品）。
+    const directPhase = {
+      inspect_qa: 'export_qa',
+      load_qa_more: 'export_qa',
+      inspect_reviews: 'export_reviews',
+      load_more: 'export_reviews',
+      open_qa: 'open_review',
+      wait_qa_panel: 'open_review',
+      close_qa_modal: 'open_review',
+      open_review: 'advance_item',
+      wait_review_panel: 'advance_item',
+    }[resumePhase] || 'advance_item'
+    return nextPhase(directPhase, remember({
+      diagnostics: { rateLimit: { itemId: currentItem().itemId, phase: resumePhase, nextPhase: directPhase, reason: '平台提示访问太频繁，停止加载并导出当前已加载数据' } },
+    }), 300)
+  }
+
+  function isCompetitorAccountRestricted() {
+    const text = bodyText()
+    return text.includes('商家账号（含子账号）不支持访问其他店铺商品详情') ||
+      text.includes('商家账号不支持访问其他店铺商品详情') ||
+      text.includes('基于店铺数据安全')
   }
 
   function inspectReviewState() {
@@ -1166,9 +1199,34 @@
     if (phase === 'wait_page') {
       const ready = await waitForPageReady()
       if (!ready) return fail(`商品页加载超时：${item.url}`)
+      // 店透视抓取竞品必须使用可查看其他店铺详情的买家账号。遇到商家账号
+      // 限制时保留任务并轮询，用户切换账号后会从当前商品继续，无需重跑全批。
+      if (isCompetitorAccountRestricted()) {
+        return nextPhase('wait_account_switch', remember({
+          accountSwitchWaits: 0,
+          diagnostics: { accountSwitch: { itemId: item.itemId, reason: '当前商家账号无权访问竞品详情，等待切换买家账号' } },
+        }), 3000)
+      }
       const blocker = detectBlocker()
-      if (blocker) return fail(`页面出现拦截提示：${blocker}`)
+      const blockerResult = resolveBlocker(blocker, phase)
+      if (blockerResult) return blockerResult
       return nextPhase('open_qa', shared, 500)
+    }
+
+    if (phase === 'wait_account_switch') {
+      if (!isCompetitorAccountRestricted()) {
+        return nextPhase('navigate', remember({ accountSwitchWaits: 0 }), 800)
+      }
+      const waits = toNumber(shared.accountSwitchWaits, 0, 0, 1200) + 1
+      if (waits > 1200) return fail('等待切换可访问竞品详情的买家账号超时（60分钟）')
+      const nextShared = remember({
+        accountSwitchWaits: waits,
+        diagnostics: { accountSwitch: { itemId: item.itemId, waiting: waits, reason: '请切换为买家账号后继续' } },
+      })
+      // 切换账号通常会更新同域 Cookie，但已展示的拒绝页不会自行刷新。
+      // 每 15 秒刷新一次，以便用户完成切换后自动恢复处理。
+      if (waits % 5 === 0) return reloadPage('wait_account_switch', nextShared, 2500)
+      return nextPhase('wait_account_switch', nextShared, 3000)
     }
 
     if (phase === 'open_qa') {
@@ -1188,7 +1246,8 @@
 
     if (phase === 'wait_qa_panel') {
       const blocker = detectBlocker()
-      if (blocker) return fail(`页面出现拦截提示：${blocker}`)
+      const blockerResult = resolveBlocker(blocker, phase)
+      if (blockerResult) return blockerResult
       const qaState = inspectQaState()
       if (qaState.noDataText && !qaState.hasRows) {
         return nextPhase('close_qa_modal', remember({
@@ -1216,7 +1275,8 @@
 
     if (phase === 'inspect_qa') {
       const blocker = detectBlocker()
-      if (blocker) return fail(`页面出现拦截提示：${blocker}`)
+      const blockerResult = resolveBlocker(blocker, phase)
+      if (blockerResult) return blockerResult
       const qaState = inspectQaState()
       if (shouldForceQaPostPageWait(qaState)) {
         const waits = toNumber(shared.qaPostPageWaits, 0, 0, 1000) + 1
@@ -1261,7 +1321,8 @@
 
     if (phase === 'load_qa_more') {
       const blocker = detectBlocker()
-      if (blocker) return fail(`页面出现拦截提示：${blocker}`)
+      const blockerResult = resolveBlocker(blocker, phase)
+      if (blockerResult) return blockerResult
       const qaState = inspectQaState()
       if ((qaState.noDataText && !qaState.hasRows) || (qaState.hasExport && !qaState.hasRows)) {
         return nextPhase('close_qa_modal', remember({
@@ -1333,7 +1394,8 @@
 
     if (phase === 'close_qa_modal') {
       const blocker = detectBlocker()
-      if (blocker) return fail(`页面出现拦截提示：${blocker}`)
+      const blockerResult = resolveBlocker(blocker, phase)
+      if (blockerResult) return blockerResult
       const match = findModalCloseCenter() || findTextCenter(['关闭'])
       if (!match) {
         const waits = toNumber(shared.closeQaWaits, 0, 0, 10) + 1
@@ -1381,7 +1443,8 @@
 
     if (phase === 'open_review') {
       const blocker = detectBlocker()
-      if (blocker) return fail(`页面出现拦截提示：${blocker}`)
+      const blockerResult = resolveBlocker(blocker, phase)
+      if (blockerResult) return blockerResult
       const match =
         findTopTextCenter(['评价分析', '评论分析', '买家评价']) ||
         findSectionByScrolling(['评价分析', '评论分析', '买家评价'])
@@ -1404,7 +1467,8 @@
 
     if (phase === 'wait_review_panel') {
       const blocker = detectBlocker()
-      if (blocker) return fail(`页面出现拦截提示：${blocker}`)
+      const blockerResult = resolveBlocker(blocker, phase)
+      if (blockerResult) return blockerResult
       const reviewState = inspectReviewState()
       if (reviewState.hasReviewPanel || reviewState.hasExport || reviewState.noDataText) {
         if (reviewState.hasReviewPanel || reviewState.hasExport) {
@@ -1428,7 +1492,8 @@
 
     if (phase === 'inspect_reviews') {
       const blocker = detectBlocker()
-      if (blocker) return fail(`页面出现拦截提示：${blocker}`)
+      const blockerResult = resolveBlocker(blocker, phase)
+      if (blockerResult) return blockerResult
       const reviewState = inspectReviewState()
       if (reviewState.isEmptyResult && !reviewState.hasRows) {
         return nextPhase('advance_item', {

@@ -33,6 +33,7 @@ from core.config import load_config, save_config
 from core import adapter_loader
 from core import data_sink
 from core import notifier
+from core.competitive_analysis import get_orchestrator
 from core import scheduler as sched_module
 from core.cdp_bridge import get_bridge, reset_bridge
 from core.browser_session import open_browser_session
@@ -1714,6 +1715,164 @@ def _write_diantoushi_merged_workbook(target: Path, headers: list[str], rows: li
     return str(final_path)
 
 
+def _write_competitive_analysis_qa_workbook(target: Path, rows: list[dict]) -> str:
+    """Write the self-product Q&A detail export used by competitive-analysis packages."""
+    from openpyxl import Workbook
+    from openpyxl.styles import Alignment, Font, PatternFill
+    from openpyxl.utils import get_column_letter
+
+    headers = ["商品ID", "结构名称", "问题内容", "回答内容", "状态", "备注"]
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "自品问大家"
+    sheet.append(headers)
+    for row in rows:
+        sheet.append([
+            str(row.get("款号/商品ID") or ""),
+            str(row.get("结构名称") or ""),
+            str(row.get("指标名称") or ""),
+            str(row.get("指标值") or ""),
+            str(row.get("状态") or ""),
+            str(row.get("备注") or ""),
+        ])
+
+    header_fill = PatternFill(fill_type="solid", fgColor="DDEBF7")
+    for cell in sheet[1]:
+        cell.fill = header_fill
+        cell.font = Font(bold=True)
+        cell.alignment = Alignment(horizontal="center", vertical="center")
+    sheet.freeze_panes = "A2"
+    for column_index in range(1, sheet.max_column + 1):
+        letter = get_column_letter(column_index)
+        max_length = max(
+            [len(str(sheet.cell(row=row_index, column=column_index).value or ""))
+             for row_index in range(1, min(sheet.max_row, 200) + 1)] or [8]
+        )
+        sheet.column_dimensions[letter].width = min(max(max_length + 4, 12), 60)
+    sheet.column_dimensions["C"].width = 42
+    sheet.column_dimensions["D"].width = 60
+    target.parent.mkdir(parents=True, exist_ok=True)
+    workbook.save(target)
+    return str(target)
+
+
+def _competitive_analysis_input_context(run_params: dict | None) -> tuple[str, list[str]]:
+    """Read structure and competitor item IDs from the run_all Excel payload."""
+    raw = dict(run_params or {}).get("input_excel") or {}
+    headers = list(raw.get("headers") or []) if isinstance(raw, dict) else []
+    rows = list(raw.get("rows") or []) if isinstance(raw, dict) else []
+    if not headers and rows and isinstance(rows[0], dict):
+        headers = list(rows[0].keys())
+    structure = ""
+    item_ids: list[str] = []
+    seen = set()
+    competitor_header = next((header for header in headers if "竞品" in str(header)), "")
+    structure_header = next((header for header in headers if "结构" in str(header)), "")
+    for row in rows:
+        if isinstance(row, dict):
+            structure = structure or str(row.get(structure_header) or "").strip()
+            value = str(row.get(competitor_header) or "").strip()
+        elif isinstance(row, (list, tuple)):
+            structure_index = headers.index(structure_header) if structure_header in headers else -1
+            competitor_index = headers.index(competitor_header) if competitor_header in headers else -1
+            structure = structure or (str(row[structure_index]).strip() if structure_index >= 0 and structure_index < len(row) else "")
+            value = str(row[competitor_index]).strip() if competitor_index >= 0 and competitor_index < len(row) else ""
+        else:
+            continue
+        if re.fullmatch(r"\d{6,}", value) and value not in seen:
+            seen.add(value)
+            item_ids.append(value)
+    return structure, item_ids
+
+
+def _finalize_competitive_analysis_outputs(
+    data_rows: list,
+    runtime_files: list,
+    exported_files: list,
+    run_params: dict | None,
+    runtime_artifact_dir: str,
+    log,
+) -> list[str]:
+    """Produce the requested structure-named exports and one final zip for the run."""
+    runtime_dir = Path(runtime_artifact_dir)
+    output_root = _default_output_root_for_runtime(runtime_dir, exported_files)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    structures = []
+    for row in data_rows or []:
+        value = str((row or {}).get("结构名称") or "").strip()
+        if value and value not in structures:
+            structures.append(value)
+    structure = _safe_local_name(structures[0] if structures else "竞品分析", "竞品分析")
+    package_root = _ensure_unique_local_dir(output_root / f"{structure}-竞品分析结果_{timestamp}")
+    package_root.mkdir(parents=True, exist_ok=True)
+
+    # 商品360下载文件已由 JSRunner 收拢到本次 runtime 目录；只使用符合本适配器
+    # 命名规则的真实文件，避免把下载中心历史文件纳入结果。
+    p360_files: list[Path] = []
+    for raw_path in runtime_files or []:
+        source = Path(str(raw_path or "")).expanduser()
+        if not source.is_file() or source in p360_files:
+            continue
+        if re.search(r"-商品360(?:_\d+)?\.(xlsx|xls)$", source.name, re.IGNORECASE):
+            p360_files.append(source)
+    for source in p360_files:
+        clean_name = re.sub(r"_\d+(\.(?:xlsx|xls))$", r"\1", source.name, flags=re.IGNORECASE)
+        _copy_file_to_unique_target(source, package_root / clean_name)
+
+    # 观远 BI 的“批量导出Excel”同样保留原始工作簿，按结构与款号归档。
+    # 原生浏览器下载会落入本轮 runtime 目录，但不一定出现在 runtime_files 回传列表。
+    bi_candidates = [Path(str(raw_path or "")).expanduser() for raw_path in (runtime_files or [])]
+    bi_candidates.extend(runtime_dir.rglob("*.xlsx"))
+    bi_candidates.extend(runtime_dir.rglob("*.xls"))
+    seen_bi_files: set[Path] = set()
+    for source in bi_candidates:
+        if source in seen_bi_files:
+            continue
+        seen_bi_files.add(source)
+        if source.is_file() and re.search(r"-单品分析(?:_\d+)?\.(xlsx|xls)$", source.name, re.IGNORECASE):
+            clean_name = re.sub(r"_\d+(\.(?:xlsx|xls))$", r"\1", source.name, flags=re.IGNORECASE)
+            _copy_file_to_unique_target(source, package_root / clean_name)
+
+    # 千牛工作台抓取的本店商品问答按结构单独输出，保留问题、回答、状态和备注。
+    qa_rows = [
+        dict(row or {}) for row in data_rows or []
+        if str((row or {}).get("数据源") or "").strip() == "天猫问大家"
+    ]
+    if qa_rows:
+        _write_competitive_analysis_qa_workbook(package_root / f"{structure}-自品问大家.xlsx", qa_rows)
+
+    # 店透视导出的原始问大家、评价分析文件同样以本次输入中的竞品商品 ID
+    # 重命名归档，避免浏览器下载的默认文件名混入最终包。
+    diantoushi_candidates = [Path(str(raw_path or "")).expanduser() for raw_path in (runtime_files or [])]
+    diantoushi_candidates.extend(runtime_dir.rglob("店透视问大家_*.xlsx"))
+    diantoushi_candidates.extend(runtime_dir.rglob("店透视评价_*.xlsx"))
+    seen_diantoushi_files: set[Path] = set()
+    for source in diantoushi_candidates:
+        if source in seen_diantoushi_files:
+            continue
+        seen_diantoushi_files.add(source)
+        if not source.is_file():
+            continue
+        match = re.fullmatch(r"店透视(问大家|评价)_(\d{6,})\.xlsx", source.name)
+        if not match:
+            continue
+        label, item_id = match.groups()
+        _copy_file_to_unique_target(source, package_root / f"{structure}-{item_id}-店透视{label}.xlsx")
+
+    for raw_path in exported_files or []:
+        source = Path(str(raw_path or "")).expanduser()
+        if source.is_file():
+            _copy_file_to_unique_target(source, package_root / source.name)
+
+    zip_path = _ensure_unique_local_path(output_root / f"{structure}-竞品分析结果_{timestamp}.zip")
+    with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        for file_path in sorted(package_root.rglob("*")):
+            if file_path.is_file():
+                archive.write(file_path, arcname=file_path.name)
+    log(f"竞品分析最终压缩包已生成: {zip_path}")
+    return [str(zip_path)]
+
+
 def _finalize_tmall_diantoushi_outputs(
     data_rows: list,
     runtime_files: list,
@@ -2523,6 +2682,21 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
             return files
 
         def finalize_output_files(data_rows, runtime_files, exported_files):
+            if adapter_id == 'competitive-analysis' and task_id == 'run_all':
+                try:
+                    packaged_refs = _finalize_competitive_analysis_outputs(
+                        data_rows=data_rows,
+                        runtime_files=runtime_files,
+                        exported_files=exported_files,
+                        run_params=run_params,
+                        runtime_artifact_dir=runtime_artifact_dir,
+                        log=log,
+                    )
+                    return merge_output_file_refs(packaged_refs)
+                except Exception as package_error:
+                    log(f"[warn] 竞品分析结果打包失败，回退到原始输出: {package_error}")
+                    return merge_output_file_refs(runtime_files, exported_files)
+
             if adapter_id == 'semir-cloud-drive':
                 try:
                     packaged_refs = _finalize_semir_cloud_drive_outputs(
@@ -2665,6 +2839,59 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
             data = aggregated_data
         else:
             data = await runner.run_script_file(script_path, params=run_params, control_hook=wait_for_control)
+
+        # 竞品分析的最后一步复用店透视已验证的导出脚本。该脚本在竞品页检测到
+        # 商家账号限制时会停留等待，用户切换为买家账号后从当前商品继续导出。
+        competitive_diantoushi_runner = None
+        if (adapter_id, task_id) == ("competitive-analysis", "run_all"):
+            structure_name, competitor_item_ids = _competitive_analysis_input_context(run_params)
+            if competitor_item_ids:
+                log(f"开始竞品店透视导出：{len(competitor_item_ids)} 个商品（问大家+评价分析）")
+                diantoushi_adapter = adapter_loader.get_adapter("tmall-ops-assistant")
+                diantoushi_task = next(
+                    (candidate for candidate in (diantoushi_adapter.tasks if diantoushi_adapter else [])
+                     if candidate.id == "diantoushi_review_export"),
+                    None,
+                )
+                if not diantoushi_adapter or not diantoushi_task:
+                    raise RuntimeError("未找到店透视导出能力，请确认 tmall-ops-assistant 已安装")
+                diantoushi_tab = bridge.new_tab("https://item.taobao.com/item.htm")
+                competitive_diantoushi_runner = JSRunner(
+                    bridge.get_tab_ws_url(diantoushi_tab),
+                    tab_id=str(diantoushi_tab.get("id") or ""),
+                    tab_url=str(diantoushi_tab.get("url") or ""),
+                    artifact_dir=runtime_artifact_dir,
+                    persist_dir=runtime_persist_dir or None,
+                )
+                diantoushi_script = adapter_loader.get_adapter_dir("tmall-ops-assistant") / diantoushi_task.script
+                diantoushi_params = {
+                    "item_links": "\n".join(competitor_item_ids),
+                    "min_pages": 30,
+                    "download_timeout_ms": 120000,
+                    "batch_rest_enabled": True,
+                    "__competitive_analysis_structure__": structure_name,
+                }
+                diantoushi_rows = await competitive_diantoushi_runner.run_script_file(
+                    diantoushi_script,
+                    params=diantoushi_params,
+                    control_hook=wait_for_control,
+                )
+                for item_row in diantoushi_rows:
+                    item_row = dict(item_row or {})
+                    item_id = str(item_row.get("商品ID") or "")
+                    qa_file = str(item_row.get("问大家导出文件") or "")
+                    review_file = str(item_row.get("评价分析导出文件") or "")
+                    note = str(item_row.get("备注") or "")
+                    data.append({
+                        "数据源": "竞品店透视",
+                        "款号/商品ID": item_id,
+                        "结构名称": structure_name,
+                        "指标名称": "店透视导出",
+                        "指标值": "；".join(part for part in [qa_file, review_file] if part),
+                        "状态": str(item_row.get("状态") or "失败"),
+                        "备注": note,
+                    })
+                log(f"竞品店透视导出完成：{len(diantoushi_rows)} 个商品")
         raw_count = len(data)
         data = _apply_final_export_guards(adapter_id, task_id, data)
         if adapter_id == 'tiktok-ops-assistant' and task_id == 'creator_video_download':
@@ -2675,6 +2902,11 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
             log(f"Final export guard removed {raw_count - deduped_count} duplicate rows before export")
 
         runtime_files = list(getattr(runner, 'runtime_output_files', []) or [])
+        if competitive_diantoushi_runner is not None:
+            runtime_files = merge_output_file_refs(
+                runtime_files,
+                list(getattr(competitive_diantoushi_runner, 'runtime_output_files', []) or []),
+            )
         exported_files = await export_outputs(data)
         output_files = finalize_output_files(data, runtime_files, exported_files)
         data_sink.finish_run(run_id, len(data), output_files)
@@ -3358,6 +3590,39 @@ def chrome_tabs():
                 for t in tabs if t.get('type') == 'page']
     except ConnectionError as e:
         raise HTTPException(503, str(e))
+
+
+@app.post("/competitive-analysis/run")
+async def competitive_analysis_run(file_path: str):
+    """执行竞品分析取数"""
+    orch = get_orchestrator()
+    try:
+        run_id = await orch.execute(file_path)
+        return {"run_id": run_id, "status": "running"}
+    except Exception as e:
+        raise HTTPException(500, str(e))
+
+
+@app.get("/competitive-analysis/{run_id}/status")
+async def competitive_analysis_status(run_id: str):
+    """查询竞品分析进度"""
+    orch = get_orchestrator()
+    status = orch.get_status(run_id)
+    if status is None:
+        raise HTTPException(404, f"Run {run_id} not found")
+    return status
+
+
+@app.get("/competitive-analysis/{run_id}/download")
+async def competitive_analysis_download(run_id: str):
+    """下载竞品分析汇总 Excel"""
+    orch = get_orchestrator()
+    output_dir = os.environ.get("CRAWSHRIMP_DATA", str(Path.home() / ".crawshrimp"))
+    output_path = os.path.join(output_dir, "data", f"competitive_analysis_{run_id}.xlsx")
+    result = orch.export_merged(run_id, output_path)
+    if result is None:
+        raise HTTPException(404, f"Run {run_id} results not available")
+    return FileResponse(result, filename=f"竞品分析_{run_id}.xlsx")
 
 
 if __name__ == "__main__":

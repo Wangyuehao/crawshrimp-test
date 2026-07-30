@@ -1283,6 +1283,10 @@ class JSRunner:
             filename = str((item or {}).get("filename") or "").strip()
             label = str((item or {}).get("label") or filename or "download").strip()
             expected_url = str((item or {}).get("expected_url") or (item or {}).get("url") or "").strip()
+            response_url_field = str(
+                (item or {}).get("response_url_field") or (item or {}).get("responseUrlField") or ""
+            ).strip()
+            capture_matches = (item or {}).get("capture_matches") or (item or {}).get("captureMatches") or []
             timeout_ms = int((item or {}).get("timeout_ms") or max(self.timeout, 30) * 1000)
             regex_text = str((item or {}).get("expected_name_regex") or "").strip()
             requested_download_dir = str(
@@ -1320,6 +1324,64 @@ class JSRunner:
                     "filename": filename,
                     "downloadDir": str(downloads_dir),
                     "error": f"下载目录不存在: {downloads_dir}",
+                }
+                results.append(result)
+                if strict:
+                    raise RuntimeError(result["error"])
+                continue
+
+            # 部分页面的“下载”按钮不会触发浏览器原生下载，而是先请求一个 JSON
+            # 接口，再由前端使用返回的临时地址下载文件。此时 Downloads 目录没有
+            # 新文件是正常现象；捕获该响应并将临时地址交给 download_urls 保存。
+            if response_url_field:
+                capture_result = await self.capture_click_requests(
+                    clicks,
+                    matches=capture_matches or None,
+                    timeout_ms=min(max(timeout_ms, 5000), 15000),
+                    settle_ms=300,
+                    min_matches=1,
+                    include_response_body=True,
+                )
+                resolved_url = ""
+                source_capture = None
+                for captured in capture_result.get("matches") or []:
+                    body = captured.get("body")
+                    if not isinstance(body, str) or not body.strip():
+                        continue
+                    try:
+                        payload = json.loads(body)
+                    except (TypeError, ValueError):
+                        continue
+                    value: object = payload
+                    for part in response_url_field.split("."):
+                        if not isinstance(value, dict):
+                            value = ""
+                            break
+                        value = value.get(part, "")
+                    if isinstance(value, str) and value.strip():
+                        resolved_url = value.strip()
+                        source_capture = captured
+                        break
+                if resolved_url:
+                    result_item = await self._download_url_item({
+                        "url": resolved_url,
+                        "filename": filename,
+                        "label": label,
+                        "retry_attempts": 2,
+                        "timeout_seconds": max(int(timeout_ms / 1000), 30),
+                    })
+                    result_item["sourceCaptureUrl"] = str((source_capture or {}).get("url") or "")
+                    results.append(result_item)
+                    if strict and not result_item.get("success"):
+                        raise RuntimeError(str(result_item.get("error") or "下载失败"))
+                    continue
+
+                result = {
+                    "success": False,
+                    "label": label,
+                    "filename": filename,
+                    "downloadDir": str(downloads_dir),
+                    "error": "点击后未取得下载地址",
                 }
                 results.append(result)
                 if strict:

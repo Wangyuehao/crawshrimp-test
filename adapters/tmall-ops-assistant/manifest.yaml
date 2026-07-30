@@ -108,8 +108,8 @@ tasks:
         type: directory
         label: 浏览器下载地址
         required: false
-        placeholder: "例如：/Users/kennel/Downloads"
-        hint: 选择 Chrome/店透视实际下载文件的目录；不填默认使用系统 Downloads。
+        placeholder: "例如：C:\\Users\\用户名\\Downloads 或 /Users/用户名/Downloads"
+        hint: 选择 Chrome/店透视实际下载文件的目录；不填时自动使用当前系统用户的 Downloads 目录。
       - id: merged_output_dir
         type: directory
         label: 合并表输出地址
