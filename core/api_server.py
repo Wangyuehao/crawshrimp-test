@@ -1785,6 +1785,21 @@ def _competitive_analysis_input_context(run_params: dict | None) -> tuple[str, l
     return structure, item_ids
 
 
+def _competitive_analysis_login_precheck_urls(run_params: dict | None) -> list[tuple[str, str]]:
+    """Return the pages a run operator should verify before competitive analysis starts."""
+    _, competitor_ids = _competitive_analysis_input_context(run_params)
+    competitor_url = (
+        f"https://detail.tmall.com/item.htm?id={competitor_ids[0]}"
+        if competitor_ids else "https://detail.tmall.com/"
+    )
+    return [
+        ("BI看板-单品分析（Semir SSO）", "https://guanbi.ecsemir.com/page/j54270c33616049dcb650111"),
+        ("商品360（Semir SSO）", "https://smbd.semirapp.cn/pc/product/productManager/product360"),
+        ("千牛问大家（淘宝卖家账号）", "https://myseller.taobao.com/home.htm/comment-manage/ask-all?current=1&pageSize=10"),
+        ("竞品店透视（淘宝买家账号）", competitor_url),
+    ]
+
+
 def _finalize_competitive_analysis_outputs(
     data_rows: list,
     runtime_files: list,
@@ -2622,6 +2637,27 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
             download_complete_callback=on_download_complete,
         )
 
+        # 竞品分析涉及三个后台和一个买家侧商品详情页。先同时打开并保留这些页，
+        # 让运行人一次性确认登录态；避免在耗时导出到中途才发现需要登录。
+        if (adapter_id, task_id) == ("competitive-analysis", "run_all"):
+            for label, url in _competitive_analysis_login_precheck_urls(run_params):
+                if _url_matches_prefix(str(tab.get("url") or ""), url):
+                    log(f"登录预检页已打开（当前页）：{label}")
+                    continue
+                try:
+                    bridge.new_tab(url)
+                    log(f"已打开登录预检页：{label}")
+                except Exception as precheck_error:
+                    # 预检页打开失败不掩盖主任务的实际错误；仍然保留日志供运行人处理。
+                    log(f"[warn] 无法打开登录预检页“{label}”：{precheck_error}")
+            try:
+                precheck_wait_seconds = max(0, min(300, int(run_params.get("login_precheck_wait_seconds") or 0)))
+            except (TypeError, ValueError):
+                precheck_wait_seconds = 60
+            if precheck_wait_seconds:
+                log(f"请在已打开的预检页确认登录状态，{precheck_wait_seconds} 秒后开始采集…")
+                await asyncio.sleep(precheck_wait_seconds)
+
         def merge_output_file_refs(*groups):
             merged = []
             seen = set()
@@ -2864,13 +2900,22 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
                     persist_dir=runtime_persist_dir or None,
                 )
                 diantoushi_script = adapter_loader.get_adapter_dir("tmall-ops-assistant") / diantoushi_task.script
+                try:
+                    competitor_min_pages = max(1, min(100, int(run_params.get("competitor_min_pages") or 20)))
+                except (TypeError, ValueError):
+                    competitor_min_pages = 20
                 diantoushi_params = {
                     "item_links": "\n".join(competitor_item_ids),
-                    "min_pages": 30,
+                    "min_pages": competitor_min_pages,
                     "download_timeout_ms": 120000,
                     "batch_rest_enabled": True,
                     "__competitive_analysis_structure__": structure_name,
                 }
+                browser_download_dir = str(run_params.get("browser_download_dir") or "").strip()
+                if browser_download_dir:
+                    diantoushi_params["browser_download_dir"] = browser_download_dir
+                    log(f"竞品店透视下载目录：{browser_download_dir}")
+                log(f"竞品店透视页数设置：问大家、评价分析各至少加载 {competitor_min_pages} 页")
                 diantoushi_rows = await competitive_diantoushi_runner.run_script_file(
                     diantoushi_script,
                     params=diantoushi_params,

@@ -36,6 +36,27 @@
   // ── 通用工具 ─────────────────────────────────────────────
   function compact(v) { return String(v == null ? '' : v).replace(/\s+/g, ' ').trim() }
   function sleep(ms) { return new Promise(r => setTimeout(r, ms)) }
+  function toIsoDate(value) {
+    const year = value.getFullYear()
+    const month = String(value.getMonth() + 1).padStart(2, '0')
+    const day = String(value.getDate()).padStart(2, '0')
+    return `${year}-${month}-${day}`
+  }
+  function recentHalfYearRange() {
+    const end = new Date()
+    end.setHours(0, 0, 0, 0)
+    const originalDay = end.getDate()
+    const start = new Date(end)
+    // 避免 8 月 31 日向前推 6 个月时溢出到 3 月：先定位到目标月1日，
+    // 再取目标月中实际存在的同日或月底。
+    start.setDate(1)
+    start.setMonth(start.getMonth() - 6)
+    const lastDay = new Date(start.getFullYear(), start.getMonth() + 1, 0).getDate()
+    start.setDate(Math.min(originalDay, lastDay))
+    // 千牛的近半年可选范围不包含“恰好六个自然月前”的当天，起始日向后顺延一天。
+    start.setDate(start.getDate() + 1)
+    return { start: toIsoDate(start), end: toIsoDate(end) }
+  }
   function randomInt(min, max) {
     const lo = Math.ceil(Number(min) || 0), hi = Math.floor(Number(max) || lo)
     return hi <= lo ? lo : lo + Math.floor(Math.random() * (hi - lo + 1))
@@ -178,11 +199,17 @@
     return true
   }
   function requestDownloadClicks(items, nextPhaseName, nextShared, sleepMs = 1000, sharedKey = 'p360Downloads') {
+    const downloadDir = compact(nextShared?.browserDownloadDir)
+    const downloadItems = (items || []).map(item => (
+      downloadDir && !compact(item?.download_dir || item?.downloadDir)
+        ? { ...item, download_dir: downloadDir }
+        : item
+    ))
     return {
       success: true,
       data: [],
       meta: {
-        action: 'download_clicks', items, strict: false, shared_key: sharedKey,
+        action: 'download_clicks', items: downloadItems, strict: false, shared_key: sharedKey,
         next_phase: nextPhaseName, sleep_ms: sleepMs, shared: nextShared,
       },
     }
@@ -390,9 +417,14 @@
     const dateMatch = dateRangeText.match(/(\d{4}-\d{2}-\d{2})\s*[~～]\s*(\d{4}-\d{2}-\d{2})/)
     if (dateMatch) { dateStart = dateMatch[1]; dateEnd = dateMatch[2] }
 
+    // 千牛“问大家”仅支持近半年筛选。BI仍使用模板中的取值时间，而问大家
+    // 固定采用“今日向前推六个自然月后加一天”的合法范围，避免运行到中途因筛选失败中断。
+    const qaRange = recentHalfYearRange()
     const init = {
       structure: structure || '竞品分析',
       dateStart, dateEnd,
+      browserDownloadDir: compact(params.browser_download_dir),
+      qaDateStart: qaRange.start, qaDateEnd: qaRange.end,
       skus: Array.from(seenSkus),
       selfIds: Array.from(seenSelfIds),
       compIds: Array.from(seenCompIds),
@@ -927,7 +959,7 @@
     await waitForLoadIdle(12000)
     const itemInput = document.querySelector('#itemParams, input[placeholder="商品ID/商品名称"]')
     const startInput = document.querySelector('input[placeholder="起始日期"]')
-    if (!itemInput || !startInput || !shared.dateStart || !shared.dateEnd) {
+    if (!itemInput || !startInput || !shared.qaDateStart || !shared.qaDateEnd) {
       const failure = row('天猫问大家', itemId, '筛选失败', '缺少商品ID或取值时间控件', '失败', '商品ID、起始日期、结束日期均为必填')
       return qaFinishItem({ ...shared, failedCount: (shared.failedCount || 0) + 1 }, [failure])
     }
@@ -943,8 +975,8 @@
 
   if (phase === 'qa_date_start') {
     const itemId = shared.selfIds[shared.qaCursor]
-    if (!await chooseQaDate(shared.dateStart)) {
-      const failure = row('天猫问大家', itemId, '筛选失败', '无法选择起始日期', '失败', shared.dateStart)
+    if (!await chooseQaDate(shared.qaDateStart)) {
+      const failure = row('天猫问大家', itemId, '筛选失败', '无法选择起始日期', '失败', shared.qaDateStart)
       return qaFinishItem({ ...shared, failedCount: (shared.failedCount || 0) + 1 }, [failure])
     }
     return nextPhase('qa_date_end', shared, 900)
@@ -952,8 +984,8 @@
 
   if (phase === 'qa_date_end') {
     const itemId = shared.selfIds[shared.qaCursor]
-    if (!await chooseQaDate(shared.dateEnd)) {
-      const failure = row('天猫问大家', itemId, '筛选失败', '无法选择结束日期', '失败', shared.dateEnd)
+    if (!await chooseQaDate(shared.qaDateEnd)) {
+      const failure = row('天猫问大家', itemId, '筛选失败', '无法选择结束日期', '失败', shared.qaDateEnd)
       return qaFinishItem({ ...shared, failedCount: (shared.failedCount || 0) + 1 }, [failure])
     }
     return nextPhase('qa_search', shared, 900)
@@ -975,7 +1007,7 @@
       Array.from(tr.querySelectorAll('button')).some(button => compact(button.textContent) === '查看回答')
     ).map(tr => ({ question: compact(tr.querySelector('td:first-child')?.textContent || ''), text: compact(tr.textContent) }))
     if (!items.length) {
-      const empty = row('天猫问大家', itemId, '无数据', '指定商品ID和取值时间内未返回问答', '成功', `${shared.dateStart}~${shared.dateEnd}`)
+      const empty = row('天猫问大家', itemId, '无数据', '指定商品ID和近半年时间内未返回问答', '成功', `${shared.qaDateStart}~${shared.qaDateEnd}`)
       return qaFinishItem({ ...shared, successCount: (shared.successCount || 0) + 1 }, [empty])
     }
     return nextPhase('qa_open_detail', { ...shared, qaPending: items, qaDetailCursor: 0 }, 300)
@@ -1042,7 +1074,7 @@
       })
       return row('天猫问大家', itemId, question, cells[0] || '', '成功', cells[1] ? `回答ID:${cells[1]}` : '')
     })
-    if (!rows.length) rows.push(row('天猫问大家', itemId, question || '问题详情', '暂无回答', '成功', `${shared.dateStart}~${shared.dateEnd}`))
+    if (!rows.length) rows.push(row('天猫问大家', itemId, question || '问题详情', '暂无回答', '成功', `${shared.qaDateStart}~${shared.qaDateEnd}`))
     const close = drawer.parentElement?.querySelector('.next-drawer-close') || document.querySelector('.next-drawer-close')
     const point = clickPoint(close)
     const next = { ...shared, qaDetailCursor: cursor + 1, qaDetailWaitRounds: 0, qaDetailExpanded: false }

@@ -1,6 +1,6 @@
 id: competitive-analysis
 name: 竞品分析
-version: 0.1.0
+version: 0.1.1
 author: wangyuehao
 description: 上传「输入内容」Excel，自动完成BI看板、商品360、自品问大家及竞品店透视（问大家、评价分析）取数，汇总导出为Excel
 entry_url: https://guanbi.ecsemir.com/page/j54270c33616049dcb650111
@@ -23,6 +23,30 @@ tasks:
     template_file: template_input.xlsx
     template_label: 下载输入模板
     hint: 按照模板格式填写：结构名称、款号、自品ID、竞品ID、取值时间
+  - id: browser_download_dir
+    type: directory
+    label: 浏览器下载地址
+    required: false
+    placeholder: "例如：C:\\Users\\用户名\\Downloads 或 /Users/用户名/Downloads"
+    hint: 选择 Chrome/店透视实际下载文件的目录；不填时自动使用当前系统用户的 Downloads 目录。
+  - id: competitor_min_pages
+    type: number
+    label: 竞品抓取页数
+    default: 20
+    min: 1
+    max: 100
+    step: 1
+    ui_span: third
+    hint: 店透视的问大家与评价分析均按此页数加载后导出；页数越大，耗时和触发平台频控的风险越高。
+  - id: login_precheck_wait_seconds
+    type: number
+    label: 登录检查等待秒数
+    default: 60
+    min: 0
+    max: 300
+    step: 5
+    ui_span: third
+    hint: 运行开始时会打开 BI、商品360、千牛问大家和竞品详情页；此处设置检查登录状态的预留时间，填0则不等待。
   trigger:
     type: manual
   output:
